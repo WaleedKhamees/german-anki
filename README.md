@@ -13,7 +13,7 @@ Mine German vocabulary and sentences from videos in **mpv** straight into **Anki
 ## Install
 
 ```sh
-git clone <this repo> && cd german-anki
+git clone https://github.com/WaleedKhamees/german-anki && cd german-anki
 ./install.sh
 ```
 
