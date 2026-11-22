@@ -4,6 +4,8 @@ Mine German vocabulary and sentences from videos in **mpv** straight into **Anki
 
 > **Note:** This project, code and documentation alike, was generated with AI.
 
+![Coloured German subtitles in mpv](docs/screenshot.jpg)
+
 - `Ctrl+W` in mpv: pick a word from the subtitle. A card is made with a definition,
   examples, a conjugation table, a screenshot, the line's audio and a pronunciation.
 - `Ctrl+E` in mpv: save a whole sentence (with your English translation) as two cards.
