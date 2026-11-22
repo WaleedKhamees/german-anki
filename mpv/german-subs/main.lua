@@ -1,7 +1,8 @@
 -- german-subs: colour German subtitles by their status in Anki.
 --
 --   white  : in Anki, with screenshot and audio
---   yellow : in Anki, missing the screenshot and/or the audio
+--   blue   : in Anki, has the screenshot but no audio
+--   yellow : in Anki, missing the screenshot (and the audio)
 --   red    : a real German word (in the dictionary) that is not in Anki
 --   gray   : not in the dictionary (names, typos, made-up words)
 --   plain  : ignored (ignore.txt), numbers, punctuation  (white by default)
@@ -20,7 +21,7 @@
 --
 -- Keys:  alt+c toggle colouring   (v still hides/shows subtitles)
 -- Settings: SUBS_* in ~/.config/german-anki/.env
--- Ignore list: ignore.txt next to this script + ~/.config/german-anki/ignore.txt (yours)
+-- Ignore list: ignore.txt next to this script (function words + common names)
 
 local mp      = require("mp")
 local msg     = require("mp.msg")
@@ -67,6 +68,7 @@ local opts = {
     enabled       = conf.bool("SUBS_ENABLED", true),
     -- ASS colours are BGR hex
     color_ok      = conf.str("SUBS_COLOR_OK", "FFFFFF"),
+    color_noaudio = conf.str("SUBS_COLOR_NOAUDIO", "FFC866"),   -- light blue
     color_missing = conf.str("SUBS_COLOR_MISSING", "00E5FF"),   -- yellow
     color_unknown = conf.str("SUBS_COLOR_UNKNOWN", "5A5AFF"),   -- red
     color_nodict  = conf.str("SUBS_COLOR_NODICT", "B4B4B4"),    -- gray
@@ -83,10 +85,8 @@ local opts = {
 local SCRIPT_DIR  = mp.get_script_directory()
 local JSON_PATH   = DATA_DIR .. "/anki-words.json"
 local WORDLIST    = DATA_DIR .. "/dict/wordlist.txt"
--- words never coloured: the list shipped with the script + your own additions
-local IGNORE_FILES = { SCRIPT_DIR .. "/ignore.txt",
-                       ((os.getenv("XDG_CONFIG_HOME") or "") ~= "" and os.getenv("XDG_CONFIG_HOME")
-                        or (os.getenv("HOME") or "") .. "/.config") .. "/german-anki/ignore.txt" }
+-- words never coloured (function words, common names)
+local IGNORE_FILES = { SCRIPT_DIR .. "/ignore.txt" }
 
 -- separable verb prefixes that can end up at the end of a clause
 local SEP_PREFIXES = {}
@@ -99,7 +99,7 @@ end
 -- ============================================================ state
 
 local overlay   = mp.create_osd_overlay("ass-events")
-local forms     = {}      -- lowercase form -> "ok" | "missing"
+local forms     = {}      -- lowercase form -> "ok" | "noaudio" | "missing"
 local ignore    = {}
 local generated = nil     -- timestamp of the loaded export
 local enabled   = opts.enabled
@@ -309,7 +309,7 @@ end
 -- ============================================================ rendering
 
 local COLORS = {
-    ok = opts.color_ok, missing = opts.color_missing,
+    ok = opts.color_ok, noaudio = opts.color_noaudio, missing = opts.color_missing,
     unknown = opts.color_unknown, nodict = opts.color_nodict, plain = opts.color_plain,
 }
 

@@ -17,6 +17,7 @@ DEFAULTS = {
     "ANKI_CONNECT_URL": "http://127.0.0.1:8765",
     "ANKI_DECK": "🇩🇪 German",
     "ANKI_NOTE_TYPE": "Basic with example",
+    "ANKI_SENTENCE_DECK": "🇩🇪 German Sentence Mining",
     "LLM_MODEL": "deepseek/deepseek-v4-flash:floor",
     "GERMAN_ANKI_DATA_DIR": "~/.local/share/german-anki",
     "OBSIDIAN_VAULT_PATH": "",
@@ -55,6 +56,7 @@ class Settings:
     anki_url: str
     deck: str
     note_type: str
+    sentence_deck: str
     llm_model: str
     data_dir: Path
     obsidian_vault: Path | None
@@ -65,6 +67,10 @@ class Settings:
     def todo_file(self): return self.data_dir / "To-do-german-words.md"
     @property
     def done_file(self): return self.data_dir / "To-do-german-words-done.md"
+    @property
+    def sentences_file(self): return self.data_dir / "sentence-mining.md"
+    @property
+    def sentences_done_file(self): return self.data_dir / "sentence-mining-done.md"
     @property
     def words_json(self): return self.data_dir / "anki-words.json"
     @property
@@ -85,6 +91,7 @@ def load():
         anki_url=raw["ANKI_CONNECT_URL"],
         deck=raw["ANKI_DECK"],
         note_type=raw["ANKI_NOTE_TYPE"],
+        sentence_deck=raw["ANKI_SENTENCE_DECK"],
         llm_model=raw["LLM_MODEL"],
         data_dir=_path(raw["GERMAN_ANKI_DATA_DIR"]),
         obsidian_vault=_path(raw["OBSIDIAN_VAULT_PATH"]),

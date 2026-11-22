@@ -11,12 +11,14 @@ import urllib.parse
 import requests
 import concurrent.futures
 import subprocess
+import threading
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 from PIL import Image
 
 from . import config
+from .images import fit_width
 from .anki import (Anki, MEDIA_TAGS, NO_PRONUNCIATION_TAG, WORD, DEFINITION, CONJUGATION,
                    SCREENSHOT, SOURCE_AUDIO, EXAMPLES, PRONUNCIATION)
 
@@ -30,7 +32,10 @@ LLM_MODEL = SETTINGS.llm_model
 ASSET_DIR = str(SETTINGS.assets_dir)  # where the mpv capture script saves screenshots/audio
 MEDIA_SEARCH_DIRS = [d for d in (ASSET_DIR, SETTINGS.obsidian_vault and str(SETTINGS.obsidian_vault)) if d]
 AUDIO_EXTS = {".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac"}
-WORD_DELAY = 3  # seconds between processing each word (for verbformen scraping)
+WORD_DELAY = 3  # seconds; retry backoff base (attempt n waits n * WORD_DELAY)
+VERBFORMEN_MIN_INTERVAL = 1.0  # seconds between verbformen page loads (politeness; the only rate-limited site)
+_verbformen_lock = threading.Lock()
+_verbformen_last = 0.0
 MAX_RETRIES = 3
 
 NUM_EXAMPLES = 3
@@ -65,19 +70,19 @@ def PROMPT(word, candidates):
 
     return (
         f"You are making a German vocabulary flashcard for the word '{word}'.\n"
-        "Respond ONLY with a valid JSON object with exactly four keys: 'is_verb', 'explanation', 'picked', 'examples'.\n\n"
+        "Respond ONLY with a valid JSON object with exactly five keys: 'is_verb', 'article', 'explanation', 'picked', 'examples'.\n\n"
 
         "'is_verb': true if the word is a German verb (infinitive, including reflexive like 'sich freuen' "
         "or separable verbs), otherwise false. JSON boolean, not a string.\n\n"
 
-        "'explanation': ONE short German sentence (max 12 words, A2/B1 vocabulary) that defines the word. "
-        "No example situations, no filler. If the word has two clearly different common meanings, "
-        "give both separated by ' / ' and keep each short. "
-        "If the word is a noun, start with the article and noun in exactly this HTML, followed by ': ':\n"
-        "- Masculine -> <b><font color='#00aaff'>der</font> Word</b>: \n"
-        "- Feminine -> <b><font color='#ff0000'>die</font> Word</b>: \n"
-        "- Neuter -> <b><font color='#00ff00'>das</font> Word</b>: \n"
-        "Otherwise start the definition directly.\n\n"
+        "'article': if the word is a noun in the meaning you define, its article \"der\", \"die\" or \"das\"; "
+        "otherwise null.\n\n"
+
+        "'explanation': a short German definition of the word, AT MOST 20 words in total (A2/B1 vocabulary). "
+        "Use the words to cover the word's common meanings, not to explain one meaning at length. "
+        "No example situations, no filler. If the word has several clearly different common meanings, "
+        "give them separated by ' / ' and keep each short. "
+        "Plain text only: no HTML, and do not start with the article or the word itself.\n\n"
 
         f"{candidate_block}"
         "Each new example is an object {\"de\": \"...\", \"en\": \"...\"}: "
@@ -205,32 +210,104 @@ DWDS_WB_URL = "https://www.dwds.de/wb/"
 DWDS_AUDIO_RE = re.compile(r'<source[^>]+src="(https://www\.dwds\.de/audio/[^"]+\.mp3)"')
 
 
-def fetch_dwds_pronunciation(word):
-    """Download the DWDS recording of `word` into Anki's media folder.
-    Returns the media filename, or None when DWDS has no recording (or can't be reached)."""
+# "Form / Grammatik" line of each DWDS entry, e.g. "Substantiv (Femininum)", "Verb", "Adjektiv".
+# A page has one such line per entry (homographs like "Leiter" have two).
+DWDS_GRAMMAR_RE = re.compile(
+    r'Form / Grammatik</span>.*?<span class="dwdswb-ft-blocktext"><span>([^<]+)</span>', re.S)
+GENDER_ARTICLES = {"Maskulinum": "der", "Femininum": "die", "Neutrum": "das"}
+ARTICLE_COLORS = {"der": "#00aaff", "die": "#ff0000", "das": "#00ff00"}
+
+
+def parse_dwds_grammar(page_html):
+    """-> list of grammar labels, one per DWDS entry on the page."""
+    return [g.strip() for g in DWDS_GRAMMAR_RE.findall(page_html)]
+
+
+def dwds_is_verb(grammar):
+    """True/False from the DWDS grammar labels, or None when DWDS had no entry.
+    Participles ("partizipiales Adjektiv") are not verbs."""
+    if not grammar:
+        return None
+    return any(g == "Verb" for g in grammar)
+
+
+def dwds_article(grammar, hint=None):
+    """Article(s) for a noun from the DWDS grammar labels, e.g. "die" or "der/die"; None if not a noun.
+    With several noun entries (homographs: die/der Leiter) `hint` (the article the LLM gave for the
+    meaning it defined) picks the entry; it is never used unless DWDS lists that article."""
+    entries = []
+    for g in grammar:
+        m = re.match(r"Substantiv \(([^)]*)\)", g)
+        if m:
+            arts = [GENDER_ARTICLES[x.strip()] for x in m.group(1).split(",") if x.strip() in GENDER_ARTICLES]
+            if arts:
+                entries.append(sorted(set(arts), key=list(ARTICLE_COLORS).index))
+    if not entries:
+        return None
+    chosen = next((e for e in entries if hint in e), entries[0]) if len(entries) > 1 else entries[0]
+    return "/".join(chosen)
+
+
+def dwds_is_noun(word, grammar):
+    """Should the card get a noun declension table? DWDS lists a noun entry, and — when the same
+    page also has a verb entry — the word was written capitalised (Essen vs essen)."""
+    if dwds_article(grammar) is None:
+        return False
+    return not dwds_is_verb(grammar) or word.strip()[:1].isupper()
+
+
+def noun_header(word, article):
+    """'<b><font color=..>die</font> Brille</b>: ' (each article coloured; 'der/die' for two genders)."""
+    arts = "/".join(f"<font color='{ARTICLE_COLORS[a]}'>{a}</font>" for a in article.split("/"))
+    word = word.strip()
+    return f"<b>{arts} {word[:1].upper() + word[1:]}</b>: "
+
+
+# a header the LLM wrote anyway (or one from an old cache entry)
+LLM_HEADER_RE = re.compile(r"^\s*<b>\s*(?:<font[^>]*>\s*(?:der|die|das)\s*</font>[\s/]*)+[^<]*</b>\s*:?\s*", re.I)
+
+
+def strip_llm_header(explanation):
+    return LLM_HEADER_RE.sub("", explanation).strip()
+
+
+def fetch_dwds(word):
+    """Look `word` up on DWDS once. -> (grammar labels, media filename of the recording or None).
+    The recording is stored in Anki's media folder."""
     t0 = time.time()
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         page = requests.get(DWDS_WB_URL + urllib.parse.quote(word.strip()), headers=headers, timeout=10)
         if page.status_code == 404:
             print(f"[!] DWDS: no entry for '{word}'")
-            return None
+            return [], None
         page.raise_for_status()
-        match = DWDS_AUDIO_RE.search(page.text)
-        if not match:
-            print(f"[!] DWDS: no pronunciation for '{word}'")
-            return None
-        audio_url = match.group(1)
+    except requests.RequestException as e:
+        print(f"[!] DWDS lookup failed for '{word}': {e}")
+        return [], None
+
+    grammar = parse_dwds_grammar(page.text)
+    match = DWDS_AUDIO_RE.search(page.text)
+    if not match:
+        print(f"[!] DWDS: no pronunciation for '{word}'")
+        return grammar, None
+    audio_url = match.group(1)
+    try:
         audio = requests.get(audio_url, headers=headers, timeout=10)
         audio.raise_for_status()
     except requests.RequestException as e:
-        print(f"[!] DWDS lookup failed for '{word}': {e}")
-        return None
+        print(f"[!] DWDS audio download failed for '{word}': {e}")
+        return grammar, None
 
     media_filename = "dwds_" + os.path.basename(urllib.parse.urlparse(audio_url).path).lower()
     anki("storeMediaFile", filename=media_filename, data=base64.b64encode(audio.content).decode("ascii"))
-    print(f"[⏱️] DWDS pronunciation ({media_filename}) took: {time.time() - t0:.2f} seconds")
-    return media_filename
+    print(f"[⏱️] DWDS lookup + pronunciation ({media_filename}) took: {time.time() - t0:.2f} seconds")
+    return grammar, media_filename
+
+
+def fetch_dwds_pronunciation(word):
+    """Download the DWDS recording of `word` into Anki's media folder; media filename or None."""
+    return fetch_dwds(word)[1]
 
 
 def backfill_media_tags():
@@ -317,6 +394,7 @@ def get_openrouter_content(word):
 
     result = {
         "is_verb": llm.get("is_verb"),
+        "article": llm.get("article"),
         "explanation": llm.get("explanation", "Explanation missing."),
         "examples": "<br><br>".join(examples),
     }
@@ -324,37 +402,81 @@ def get_openrouter_content(word):
     save_cache(cache)
     return result
 
-def capture_conjugation(word, output_path):
+def _verbformen_route(route):
+    """Load only verbformen's own pages/scripts/styles: images, media and fonts are not needed for the
+    table, and third-party requests (consent manager, ads) only slow the page down (~1.5s -> ~0.9s)."""
+    req = route.request
+    host = urllib.parse.urlparse(req.url).hostname or ""
+    if req.resource_type in ("image", "media", "font") or not (host == "verbformen.com" or host.endswith(".verbformen.com")):
+        return route.abort()
+    return route.continue_()
+
+
+def _wait_for_verbformen_slot():
+    """Keep at least VERBFORMEN_MIN_INTERVAL between verbformen page loads of this process."""
+    global _verbformen_last
+    with _verbformen_lock:
+        wait = VERBFORMEN_MIN_INTERVAL - (time.monotonic() - _verbformen_last)
+        if wait > 0:
+            time.sleep(wait)
+        _verbformen_last = time.monotonic()
+
+
+def verbformen_urls(word, is_noun=False):
+    """Pages to try for the table. The search URL (/conjugation/?w=) prefers the verb when a word is
+    both (Schaden -> 'schaden'), so for nouns go to the noun declension page first."""
+    search = f"https://www.verbformen.com/conjugation/?w={urllib.parse.quote(word)}"
+    if not is_noun:
+        return [search]
+    noun = word.strip()
+    noun = noun[:1].upper() + noun[1:]
+    return [f"https://www.verbformen.com/declension/nouns/{urllib.parse.quote(noun)}.htm", search]
+
+
+def capture_conjugation(word, output_path, is_noun=False):
+    """Screenshot verbformen's conjugation/declension table for `word` into output_path.
+    For a noun only a declension page is accepted, never a verb's conjugation table."""
     t0 = time.time()
-    try: 
+    try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(color_scheme="dark")
             page = context.new_page()
-            
-            page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-            page.goto(f"https://www.verbformen.com/conjugation/?w={word}")
-            
-            try:
-                page.evaluate("""
-                    const banner = document.querySelector('.cmpwrapper');
-                    if (banner) { banner.remove(); }
-                """)
-                page.wait_for_timeout(200)
-            except Exception:
-                pass
-            
-            locator = page.locator("section > .rAufZu")
-            count = locator.count()
+            page.route("**/*", _verbformen_route)
 
-            if count < 2:
-                raise Exception(f"Only found {count} matching elements. (Word might not be a verb)")
+            problem = "no page tried"
+            for url in verbformen_urls(word, is_noun):
+                _wait_for_verbformen_slot()
+                response = page.goto(url)
+                if response is not None and response.status >= 400:
+                    problem = f"HTTP {response.status} for {url}"
+                    continue
+                if is_noun and not page.title().startswith("Declension"):
+                    problem = f"{url} is not a noun declension page"
+                    continue
+                try:
+                    page.evaluate("""
+                        const banner = document.querySelector('.cmpwrapper');
+                        if (banner) { banner.remove(); }
+                    """)
+                    page.wait_for_timeout(200)
+                except Exception:
+                    pass
 
-            table_locator = locator.nth(1)
-            table_locator.wait_for(state="visible", timeout=10000)
-            table_locator.screenshot(path=output_path)
+                locator = page.locator("section > .rAufZu")
+                count = locator.count()
+                if count < 2:
+                    problem = f"Only found {count} matching elements on {url}"
+                    continue
+
+                table_locator = locator.nth(1)
+                table_locator.wait_for(state="visible", timeout=10000)
+                table_locator.screenshot(path=output_path)
+                browser.close()
+                print(f"[⏱️] Screenshot capture took: {time.time() - t0:.2f} seconds ({url})")
+                return
             browser.close()
-            print(f"[⏱️] Screenshot capture took: {time.time() - t0:.2f} seconds")
+            raise Exception(problem)
     except Exception as e:
         print(f"[⏱️] Screenshot failed/skipped after {time.time() - t0:.2f} seconds: {e}")
         raise
@@ -458,8 +580,7 @@ def find_and_upload_obsidian_image(filename):
             img = img.convert("RGBA")
         else:
             img = img.convert("RGB")
-        w, h = img.size
-        img = img.resize((w // 2, h // 2), Image.LANCZOS)
+        img = fit_width(img)
         buf = io.BytesIO()
         fmt = "PNG" if image_file.suffix.lower() == ".png" else "WEBP"
         img.save(buf, format=fmt, optimize=True)
@@ -550,12 +671,15 @@ def process_single_word(word, custom_image=None, custom_audio=None):
     final_image_path = None
     img_src = None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    # one worker per task: the screenshot task waits for the DWDS result, so it must never be
+    # able to block DWDS from getting a worker
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_dwds = executor.submit(fetch_dwds, word)
         future_llm = executor.submit(get_openrouter_content, word)
-        future_image = executor.submit(capture_conjugation, word, image_path)
+        future_image = executor.submit(
+            lambda: capture_conjugation(word, image_path, is_noun=dwds_is_noun(word, future_dwds.result()[0])))
         future_upload = executor.submit(find_and_upload_obsidian_image, custom_image) if custom_image else None
         future_audio = executor.submit(find_and_upload_audio, custom_audio) if custom_audio else None
-        future_dwds = executor.submit(fetch_dwds_pronunciation, word)
 
         llm_data = future_llm.result()
 
@@ -570,7 +694,7 @@ def process_single_word(word, custom_image=None, custom_audio=None):
             img_src = uploaded_filename if uploaded_filename else custom_image
 
         audio_src = future_audio.result() if future_audio else None
-        pronunciation = future_dwds.result()
+        dwds_grammar, pronunciation = future_dwds.result()
 
     explanation = llm_data.get("explanation", "Explanation missing.")
     examples = llm_data.get("examples", "Examples missing.")
@@ -588,12 +712,23 @@ def process_single_word(word, custom_image=None, custom_audio=None):
     explanation = str(explanation)
     examples = str(examples)
 
-    # LLM decides; fall back to whether verbformen had a conjugation table (e.g. old cache entries).
-    is_verb = llm_data.get("is_verb")
-    if isinstance(is_verb, str):
-        is_verb = is_verb.strip().lower() == "true"
-    if not isinstance(is_verb, bool):
-        is_verb = final_image_path is not None
+    # Article header: the article comes from DWDS only (the LLM's 'article' merely picks between
+    # DWDS entries for homographs). No DWDS noun entry -> no header.
+    explanation = strip_llm_header(explanation)
+    article = dwds_article(dwds_grammar, llm_data.get("article"))
+    if article:
+        explanation = noun_header(word, article) + explanation
+        print(f"[+] '{word}': article '{article}' from DWDS")
+
+    # Verb tag from DWDS; when DWDS has no entry, fall back to the LLM, then to whether
+    # verbformen had a conjugation table.
+    is_verb = dwds_is_verb(dwds_grammar)
+    if is_verb is None:
+        is_verb = llm_data.get("is_verb")
+        if isinstance(is_verb, str):
+            is_verb = is_verb.strip().lower() == "true"
+        if not isinstance(is_verb, bool):
+            is_verb = final_image_path is not None
     if is_verb:
         print(f"[+] '{word}' tagged as verb")
 
@@ -689,10 +824,6 @@ def run_clipboard():
                     skipped_words = [w for w, _, _ in remaining]
                     print(f"[X] Stopping. Skipped remaining {len(remaining)} word(s): {', '.join(skipped_words)}")
                 break
-
-            if idx < total - 1:
-                print(f"[...] Waiting {WORD_DELAY}s before next word...")
-                time.sleep(WORD_DELAY)
 
         report_lines = []
         if succeeded:

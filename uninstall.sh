@@ -31,7 +31,15 @@ if [[ $PURGE -eq 1 ]]; then
     echo "  $DATA_DIR"
     read -r -p "Type 'delete' to confirm: " answer
     if [[ "$answer" == "delete" ]]; then
-        rm -rf "$(dirname "$CONFIG_FILE")" "$DATA_DIR" "${XDG_CACHE_HOME:-$HOME/.cache}/german-anki"
+        config_dir="$(dirname "$CONFIG_FILE")"
+        if [[ -L "$config_dir" ]]; then
+            # a link into your dotfiles: remove only the link, never the files in the repo
+            echo "removed the link $config_dir (kept $(readlink -f "$config_dir"))"
+            rm "$config_dir"
+        else
+            rm -rf "$config_dir"
+        fi
+        rm -rf "$DATA_DIR" "${XDG_CACHE_HOME:-$HOME/.cache}/german-anki"
         echo "deleted"
     else
         echo "kept"

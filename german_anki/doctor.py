@@ -59,8 +59,12 @@ def run():
               "start Anki; install the AnkiConnect add-on (Tools → Add-ons → Get Add-ons → 2055492159)")
         print(f"\n{problems} problem(s)" if problems else "")
         return 1
-    check(s.deck in anki("deckNames"), f"deck '{s.deck}' exists",
+    decks = anki("deckNames")
+    check(s.deck in decks, f"deck '{s.deck}' exists",
           "create it in Anki (or sync from AnkiWeb), or set ANKI_DECK")
+    check(s.sentence_deck in decks, f"sentence deck '{s.sentence_deck}' exists",
+          "create it in Anki, or set ANKI_SENTENCE_DECK (only needed for `german-anki sentences`)",
+          warn_only=True)
     if s.note_type in anki("modelNames"):
         fields = anki("modelFieldNames", modelName=s.note_type)
         missing = [f for f in REQUIRED_FIELDS if f not in fields]

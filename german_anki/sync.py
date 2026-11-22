@@ -3,7 +3,7 @@
 Writes <data>/anki-words.json:
   {"generated", "synced_at", "words": {Word: {screenshot, audio}},
    "notes": {noteId: raw Word}, "other_notes": {noteId: label}, "mods": {noteId: mod},
-   "forms": {form: "ok"|"missing"}}          <- "forms" is what german-subs reads
+   "forms": {form: "ok"|"noaudio"|"missing"}}          <- "forms" is what german-subs reads
 and <data>/anki-words-to-review.txt (phrases, annotations, words missing from the dictionary).
 
 Fast path (runs every few seconds while a video plays):
@@ -91,15 +91,78 @@ def fetch_deck(anki, deck_name, prev):
     return note_words, other_notes, words, mods, full
 
 
-def build_forms(words, forms_of):
+# Bump when build_forms changes, so the next sync rebuilds the export even if the deck didn't change.
+FORMS_VERSION = 3
+
+# Status of a form, best first. When several cards share a form, the best one wins.
+#   ok      : screenshot and audio
+#   noaudio : screenshot, no audio
+#   missing : no screenshot (and usually no audio either)
+STATUS_RANK = {"ok": 0, "noaudio": 1, "missing": 2}
+
+
+def media_status(media):
+    if media["screenshot"] and media["audio"]:
+        return "ok"
+    if media["screenshot"]:
+        return "noaudio"
+    return "missing"
+
+# Determiners / pronouns decline like this, but the Wiktionary data lists them only partly
+# (alle -> no allen/aller; jeder -> only jedes; dieser -> nothing). Closed class, so spell it out.
+_ENDINGS = ("e", "en", "er", "es", "em")
+DECLINED = [
+    {"all", *("all" + e for e in _ENDINGS)},
+    {"jed" + e for e in _ENDINGS},
+    {"dies", *("dies" + e for e in _ENDINGS)},
+    {"jen" + e for e in _ENDINGS},
+    {"welch", *("welch" + e for e in _ENDINGS)},
+    {"solch", *("solch" + e for e in _ENDINGS)},
+    {"manch", *("manch" + e for e in _ENDINGS)},
+    {"andre", "andern", *("ander" + e for e in _ENDINGS)},
+    {"einig" + e for e in _ENDINGS},
+    {"beid" + e for e in _ENDINGS},
+    {"mehrer" + e for e in _ENDINGS},
+    {"viel", *("viel" + e for e in _ENDINGS)},
+    {"wenig", *("wenig" + e for e in _ENDINGS)},
+    {"kein", "keins", *("kein" + e for e in _ENDINGS)},
+    {"mein", "meins", *("mein" + e for e in _ENDINGS)},
+    {"dein", "deins", *("dein" + e for e in _ENDINGS)},
+    {"unser", "unsers", *("unser" + e for e in _ENDINGS), *("unsr" + e for e in _ENDINGS)},
+    {"euer", "eures", *("eur" + e for e in _ENDINGS)},
+]
+DECLINED_OF = {form: group for group in DECLINED for form in group}
+
+
+def _shares_stem(key, lemma):
+    """andere/anderer, solcher/solch: yes.  gerecht/rechen, unterstrich/unterstreichen: no."""
+    n = min(len(key), len(lemma)) - 2
+    return n >= 3 and key[:n] == lemma[:n]
+
+
+def lemmas_to_expand(keys, heads, lemmas_of):
+    """Lemmas whose forms a key should also get: only for keys that are themselves an inflected
+    form (not a headword) and only when key and lemma share the stem (dictionary links like
+    gerecht -> rechen are wrong)."""
+    return {k: {l for l in lemmas_of.get(k, ()) if _shares_stem(k, l)} for k in keys if k not in heads}
+
+
+def build_forms(words, forms_of, expand=None):
+    """{Anki word: media} -> {lowercase form: "ok"|"noaudio"|"missing"} for every form that should be coloured:
+    the word itself, its dictionary forms, the full declension of determiners/pronouns, and the
+    lemma + lemma forms from `expand` (andere -> anderer, anderen, anderes, ...)."""
+    expand = expand or {}
     forms = {}
     for word, media in words.items():
         key, _ = normalize(word)
         if key is None:
             continue
-        status = "ok" if media["screenshot"] and media["audio"] else "missing"
-        for form in {key} | forms_of.get(key, set()):
-            if forms.get(form) != "ok":   # if any word behind a form is complete, call it ok
+        status = media_status(media)
+        mine = {key} | forms_of.get(key, set()) | DECLINED_OF.get(key, set())
+        for lemma in expand.get(key, ()):
+            mine |= {lemma} | forms_of.get(lemma, set())
+        for form in mine:
+            if form not in forms or STATUS_RANK[status] < STATUS_RANK[forms[form]]:
                 forms[form] = status
     return forms
 
@@ -121,7 +184,7 @@ def build_review(deck_name, note_words, other_notes, heads, lemmas_of):
         keys_seen[key].append(word)
         if key not in heads:
             if key in lemmas_of:
-                review["Inflected form instead of base word (only this exact form is matched)"].append(
+                review["Inflected form instead of base word (the base word's forms are matched only if it shares the stem)"].append(
                     f"{word}   ->  base word: {', '.join(sorted(lemmas_of[key]))}")
             else:
                 review["Not in the dictionary (typo? rare word? only this exact form is matched)"].append(word)
@@ -153,7 +216,8 @@ def run(settings):
               + ("keeping the previous export" if has_export else "no previous export"), file=sys.stderr)
         return 3 if has_export else 2
 
-    unchanged = (prev.get("forms") is not None and words == prev.get("words")
+    unchanged = (prev.get("forms") is not None and prev.get("forms_version") == FORMS_VERSION
+                 and words == prev.get("words")
                  and _str_keys(other_notes) == (prev.get("other_notes") or {})
                  and _str_keys(note_words) == (prev.get("notes") or {}))
     if unchanged and not full:
@@ -166,11 +230,17 @@ def run(settings):
     con = dictionary.connect(settings.dict_dir)
     keys = {normalize(w)[0] for w in words} - {None}
     heads, forms_of, lemmas_of = dictionary.lookup(con, keys)
-    forms = build_forms(words, forms_of)
+    expand = lemmas_to_expand(keys, heads, lemmas_of)
+    extra = set().union(*expand.values()) - keys if expand else set()
+    if extra:   # forms of the lemmas behind inflected-form cards (andere -> anderer)
+        _, lemma_forms, _ = dictionary.lookup(con, extra)
+        forms_of = {**lemma_forms, **forms_of}
+    forms = build_forms(words, forms_of, expand)
 
     _write_atomic(out_json, json.dumps({
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "synced_at": time.time(),
+        "forms_version": FORMS_VERSION,
         "deck": settings.deck,
         "words": words,
         "notes": _str_keys(note_words),

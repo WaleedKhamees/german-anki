@@ -7,6 +7,14 @@
 --   3. Meaning: optional note/translation, Enter saves (empty is fine).
 -- Esc goes back one step (closes on step 1).
 --
+-- Ctrl+E  -> the same panel in sentence mode (SENTENCE_HOTKEY):
+--   1. Pick   : Tab marks words; they are joined in the order you marked them
+--               (marked words show their number). Nothing marked: the whole line.
+--   2. Edit   : fix the sentence, Enter.
+--   3. English: the translation (required), Enter saves.
+--   The row (German | English | screenshot | audio) goes to SENTENCE_FILE and is sent to
+--   `german-anki add-sentence`; a new card moves it to SENTENCE_DONE_FILE.
+--
 -- On save a row is appended to MARKDOWN_FILE with:
 --   word | meaning | screenshot (with subtitles) | audio clip of the subtitle line
 -- The audio is cut with ffmpeg in the background from the active audio track.
@@ -60,6 +68,8 @@ local BASE_DIR      = conf.str("GERMAN_ANKI_DATA_DIR", "~/.local/share/german-an
 local MARKDOWN_FILE = BASE_DIR .. "/To-do-german-words.md"
 local ASSET_DIR     = BASE_DIR .. "/assets"
 local DONE_FILE     = BASE_DIR .. "/To-do-german-words-done.md"
+local SENTENCE_FILE      = BASE_DIR .. "/sentence-mining.md"
+local SENTENCE_DONE_FILE = BASE_DIR .. "/sentence-mining-done.md"
 
 -- Every saved row is sent to `german-anki add-row` (one at a time, in the background). A new
 -- card moves the row from MARKDOWN_FILE to DONE_FILE; a word that was already in Anki (missing
@@ -70,6 +80,8 @@ local GERMAN_ANKI   = conf.bool("CAPTURE_AUTO_ADD", true)
 
 local IMAGE_SIZE    = conf.str("CAPTURE_IMAGE_SIZE", "500x379")   -- Obsidian embed size hint
 local HOTKEY        = conf.str("CAPTURE_HOTKEY", "ctrl+w")
+local SENTENCE_HOTKEY = conf.str("SENTENCE_HOTKEY", "ctrl+e")
+local SENTENCE_SLUG_WORDS = 4     -- media files are named after the first words of the sentence
 
 local AUDIO_PAD_BEFORE = 0.25     -- seconds of audio kept before the subtitle starts
 local AUDIO_PAD_AFTER  = 0.40     -- ... and after it ends
@@ -101,6 +113,7 @@ toast.z = 10
 local toast_timer = nil
 
 local state = "inactive"          -- inactive | selecting | editing_word | typing
+local mode = "word"               -- word (Ctrl+W) | sentence (Ctrl+E)
 local capture_counter = 0
 
 local tokens = {}                 -- { {raw=, word=}, ... } from the subtitle
@@ -109,6 +122,7 @@ local filtered = {}               -- indices into tokens
 local sel = 1                     -- index into filtered
 local scroll = 1
 local marked = {}                 -- token index -> true
+local mark_order = {}             -- token indices in the order they were marked (sentence mode)
 
 local chosen_word = ""
 local input_chars, cursor_pos = {}, 1
@@ -199,9 +213,10 @@ local function ensure_dirs()
     return r.status == 0
 end
 
-local function append_markdown(row)
-    local new_file = not file_exists(MARKDOWN_FILE)
-    local f, err = io.open(MARKDOWN_FILE, "a")
+local function append_markdown(row, file)
+    file = file or MARKDOWN_FILE
+    local new_file = not file_exists(file)
+    local f, err = io.open(file, "a")
     if not f then return false, tostring(err) end
     if new_file then
         f:write("| German | English | Image | Audio |\n")
@@ -420,7 +435,9 @@ local function render()
     local y = py + pad
 
     -- Header: title + step indicator
-    local steps = { { "selecting", "1 Pick" }, { "editing_word", "2 Edit" }, { "typing", "3 Meaning" } }
+    local sm = (mode == "sentence")
+    local steps = { { "selecting", "1 Pick" }, { "editing_word", "2 Edit" },
+                    { "typing", sm and "3 English" or "3 Meaning" } }
     local step_txt = {}
     for _, st in ipairs(steps) do
         if st[1] == state then
@@ -429,17 +446,20 @@ local function render()
             step_txt[#step_txt + 1] = tag(C.faint, st[2])
         end
     end
-    out[#out + 1] = draw_text(px + pad, y, sfs, "{\\b1}" .. tag(C.accent, "WORD CAPTURE") .. "{\\b0}")
+    out[#out + 1] = draw_text(px + pad, y, sfs, "{\\b1}" .. tag(C.accent, sm and "SENTENCE CAPTURE" or "WORD CAPTURE") .. "{\\b0}")
     out[#out + 1] = draw_text(px + pw - pad, y, sfs, table.concat(step_txt, tag(C.faint, "  ›  ")), 9)
     y = y + math.floor(sfs * 2.0)
 
     -- Sentence with highlights
     local hl = (state == "selecting") and current_token() or nil
+    local order_of = {}
+    for k, i in ipairs(mark_order) do order_of[i] = k end
     local parts = {}
     for i, t in ipairs(tokens) do
         local txt = ass_escape(t.raw)
         if marked[i] then
             txt = "{\\b1}" .. tag(C.ok, txt) .. "{\\b0}"
+            if sm and order_of[i] then txt = tag(C.ok, "{\\fscx70\\fscy70}" .. order_of[i] .. "{\\fscx100\\fscy100}") .. txt end
         elseif i == hl then
             txt = "{\\b1\\u1}" .. tag(C.accent, txt) .. "{\\u0\\b0}"
         elseif state == "selecting" then
@@ -457,13 +477,13 @@ local function render()
     -- Input field
     local labels = {
         selecting    = "Search",
-        editing_word = "Word",
-        typing       = "Meaning",
+        editing_word = sm and "Sentence" or "Word",
+        typing       = sm and "English" or "Meaning",
     }
     local placeholders = {
         selecting    = "type to filter…",
         editing_word = nil,
-        typing       = "optional — Enter to skip",
+        typing       = sm and "required — the translation" or "optional — Enter to skip",
     }
     local fh = math.floor(fs * 1.9)
     out[#out + 1] = draw_box(px + pad, y, inner, fh, math.floor(8 * s), C.field)
@@ -491,7 +511,7 @@ local function render()
             for k = scroll, last do
                 local ti = filtered[k]
                 local word = ass_escape(tokens[ti].word)
-                local mark = marked[ti] and tag(C.ok, "✓ ") or "   "
+                local mark = marked[ti] and tag(C.ok, (sm and order_of[ti]) and (order_of[ti] .. " ") or "✓ ") or "   "
                 if k == sel then
                     out[#out + 1] = draw_box(px + pad, y, inner, row_h, math.floor(6 * s), C.sel_bg)
                     out[#out + 1] = draw_box(px + pad, y + math.floor(row_h * 0.2), math.floor(4 * s),
@@ -513,7 +533,12 @@ local function render()
         for _ in pairs(marked) do n_marked = n_marked + 1 end
         if n_marked > 0 then
             y = y + math.floor(4 * s)
-            out[#out + 1] = draw_text(px + pad, y, sfs, tag(C.ok, n_marked .. " word(s) marked — Enter joins them"))
+            out[#out + 1] = draw_text(px + pad, y, sfs, tag(C.ok, n_marked .. " word(s) marked — Enter joins them" ..
+                (sm and " in this order" or "")))
+            y = y + math.floor(sfs * 1.5)
+        elseif sm then
+            y = y + math.floor(4 * s)
+            out[#out + 1] = draw_text(px + pad, y, sfs, tag(C.dim, "nothing marked — Enter takes the whole line"))
             y = y + math.floor(sfs * 1.5)
         end
     elseif state == "typing" then
@@ -555,10 +580,11 @@ end
 
 -- ------------------------------------------------------------ Anki queue (german-anki add-row)
 
--- remove the first line equal to `row` from MARKDOWN_FILE; append it to DONE_FILE if to_done
-local function move_row_to_done(row, to_done)
-    local f = io.open(MARKDOWN_FILE, "r")
-    if not f then return false, "cannot read " .. MARKDOWN_FILE end
+-- remove the first line equal to `row` from `file`; append it to `done_file` if to_done
+local function move_row_to_done(row, to_done, file, done_file)
+    file, done_file = file or MARKDOWN_FILE, done_file or DONE_FILE
+    local f = io.open(file, "r")
+    if not f then return false, "cannot read " .. file end
     local lines, removed = {}, false
     for line in f:lines() do
         if not removed and line == row then removed = true else lines[#lines + 1] = line end
@@ -567,8 +593,8 @@ local function move_row_to_done(row, to_done)
     if not removed then return false, "row not found in to-do file" end
 
     if to_done then
-        local done_new = not file_exists(DONE_FILE)
-        local d, err = io.open(DONE_FILE, "a")
+        local done_new = not file_exists(done_file)
+        local d, err = io.open(done_file, "a")
         if not d then return false, tostring(err) end
         if done_new then
             d:write("| German | English | Image | Audio |\n| ------ | ------- | ----- | ----- |\n")
@@ -577,7 +603,7 @@ local function move_row_to_done(row, to_done)
         d:close()
     end
 
-    local w, err2 = io.open(MARKDOWN_FILE, "w")
+    local w, err2 = io.open(file, "w")
     if not w then return false, tostring(err2) end
     w:write(table.concat(lines, "\n") .. "\n")
     w:close()
@@ -591,7 +617,7 @@ local function run_anki_queue()
     anki_busy = true
     local job = table.remove(anki_queue, 1)
     mp.command_native_async({
-        name = "subprocess", args = { GERMAN_ANKI, "add-row", job.row },
+        name = "subprocess", args = { GERMAN_ANKI, job.cmd, job.row },
         playback_only = false, capture_stdout = true, capture_stderr = true,
     }, function(success, res)
         local out = res and res.stdout or ""
@@ -600,7 +626,7 @@ local function run_anki_queue()
             -- only brand-new cards are logged in the done file; words that were already in
             -- Anki (media filled in, or already complete) just leave the to-do file
             local kind = trim(out:match("STATUS: ([^\n]*)") or "added")
-            local moved, err = move_row_to_done(job.row, kind == "added")
+            local moved, err = move_row_to_done(job.row, kind == "added", job.file, job.done_file)
             if moved then
                 show_toast({ tag(C.ok, "Anki ✓ ") .. ass_escape(result) }, 3)
             else
@@ -611,7 +637,7 @@ local function run_anki_queue()
         else
             local why = result ~= "" and result
                 or trim(res and (res.stderr ~= "" and res.stderr or res.error_string) or "?"):sub(-200)
-            msg.error("german-anki add-row failed for " .. job.word .. ": " .. tostring(res and res.stderr))
+            msg.error("german-anki " .. job.cmd .. " failed for " .. job.word .. ": " .. tostring(res and res.stderr))
             show_toast({ tag(C.err, "Anki ✗ ") .. "{\\b1}" .. ass_escape(job.word) .. "{\\b0}",
                          tag(C.dim, ass_escape(why)), tag(C.faint, "row kept in the to-do file") }, 7)
         end
@@ -620,9 +646,11 @@ local function run_anki_queue()
     end)
 end
 
-local function queue_for_anki(row, word)
+local function queue_for_anki(row, word, sentence_mode)
     if not GERMAN_ANKI then return end
-    anki_queue[#anki_queue + 1] = { row = row, word = word }
+    anki_queue[#anki_queue + 1] = sentence_mode
+        and { row = row, word = word, cmd = "add-sentence", file = SENTENCE_FILE, done_file = SENTENCE_DONE_FILE }
+        or { row = row, word = word, cmd = "add-row", file = MARKDOWN_FILE, done_file = DONE_FILE }
     run_anki_queue()
 end
 
@@ -657,6 +685,7 @@ local function execute_save(meaning)
     local german = trim(chosen_word)
     meaning = trim(meaning)
     if german == "" then show_toast({ tag(C.err, "✗ Empty word — nothing saved") }); resume_playback(); return end
+    local sentence_mode = (mode == "sentence")
 
     if not ensure_dirs() then
         show_toast({ tag(C.err, "✗ Could not create " .. ass_escape(ASSET_DIR)) }, 6)
@@ -664,7 +693,16 @@ local function execute_save(meaning)
         return
     end
 
-    local name = next_versioned_name(german)
+    local slug_src = german
+    if sentence_mode then
+        local first = {}
+        for w in german:gmatch("%S+") do
+            if #first >= SENTENCE_SLUG_WORDS then break end
+            first[#first + 1] = w
+        end
+        slug_src = table.concat(first, " ")
+    end
+    local name = next_versioned_name(slug_src)
     local image_name = name .. ".webp"
     local audio_name = name .. ".ogg"
     local image_path = ASSET_DIR .. "/" .. image_name
@@ -683,12 +721,12 @@ local function execute_save(meaning)
         local audio_ref = audio_ok and string.format("![[%s]]", audio_name) or ""
         local row = string.format("| %s | %s | %s | %s |\n",
             markdown_cell(german), markdown_cell(meaning), image_ref, audio_ref)
-        local ok, err = append_markdown(row)
+        local ok, err = append_markdown(row, sentence_mode and SENTENCE_FILE or MARKDOWN_FILE)
         if not ok then
             show_toast({ tag(C.err, "✗ Could not write markdown"), tag(C.dim, ass_escape(err)) }, 7)
             return
         end
-        queue_for_anki((row:gsub("\n$", "")), german)
+        queue_for_anki((row:gsub("\n$", "")), german, sentence_mode)
         show_toast({
             tag(C.ok, "✓ ") .. "{\\b1}" .. ass_escape(german) .. "{\\b0}",
             (shot_ok and tag(C.ok, "screenshot ✓") or tag(C.err, "screenshot ✗")) .. tag(C.faint, "  •  ") ..
@@ -774,6 +812,11 @@ local function toggle_mark()
     local ti = current_token()
     if not ti then return end
     marked[ti] = not marked[ti] or nil
+    if marked[ti] then
+        mark_order[#mark_order + 1] = ti
+    else
+        for k, i in ipairs(mark_order) do if i == ti then table.remove(mark_order, k); break end end
+    end
     if #input_chars > 0 then
         -- clear the search so the next word can be typed right away
         set_input("")
@@ -784,6 +827,15 @@ local function toggle_mark()
 end
 
 local function selected_phrase()
+    if mode == "sentence" then
+        if #mark_order == 0 then
+            -- nothing marked: the whole subtitle line, without a leading dialogue dash
+            return trim(sentence:gsub("%s*\n%s*", " "):gsub("^[-–—]%s*", ""))
+        end
+        local words = {}
+        for _, i in ipairs(mark_order) do words[#words + 1] = tokens[i].word end
+        return table.concat(words, " ")
+    end
     local idx = {}
     for i in pairs(marked) do idx[#idx + 1] = i end
     if #idx == 0 then
@@ -811,6 +863,10 @@ local function handle_enter()
         state = "typing"
     elseif state == "typing" then
         local meaning = table.concat(input_chars)
+        if mode == "sentence" and trim(meaning) == "" then
+            show_toast({ tag(C.err, "Type the English translation first") }, 2)
+            return
+        end
         close_ui(true)   -- execute_save resumes playback once the screenshot is taken
         execute_save(meaning)
         return
@@ -874,8 +930,9 @@ end
 -- LAUNCHER
 -- ============================================================
 
-local function start_capture()
+local function start_capture(m)
     if state ~= "inactive" then close_ui(); return end
+    mode = m or "word"
 
     local text = mp.get_property("sub-text")
     if not text or trim(text) == "" then
@@ -894,6 +951,7 @@ local function start_capture()
     end
     sentence = text
     marked = {}
+    mark_order = {}
     chosen_word = ""
     set_input("")
     update_filter()
@@ -907,6 +965,10 @@ local function start_capture()
     render()
 end
 
-mp.add_forced_key_binding(HOTKEY, "german-word-capture", start_capture)
-mp.register_script_message("german-word-capture", start_capture)
+mp.add_forced_key_binding(HOTKEY, "german-word-capture", function() start_capture("word") end)
+mp.register_script_message("german-word-capture", function() start_capture("word") end)
+if SENTENCE_HOTKEY ~= "" then
+    mp.add_forced_key_binding(SENTENCE_HOTKEY, "german-sentence-capture", function() start_capture("sentence") end)
+end
+mp.register_script_message("german-sentence-capture", function() start_capture("sentence") end)
 mp.observe_property("osd-dimensions", "native", function() if state ~= "inactive" then render() end end)

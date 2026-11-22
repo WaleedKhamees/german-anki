@@ -6,7 +6,11 @@
 #     --no-packages        don't install system packages (only report what is missing)
 #     --dict-zip FILE      use a local dict-de-de.zip instead of downloading it
 #     --skip-browser       don't download Playwright's Chromium (conjugation tables)
-#     --migrate-from DIR   copy assets/ and the to-do/done lists from an older setup
+#     --migrate-from DIR   copy assets/, the to-do/done and sentence lists from an older setup
+#     --config-dir DIR     keep the config (.env) in DIR and link ~/.config/german-anki
+#                          to it. Default: <dotfiles>/.config/german-anki when this repo lives
+#                          inside a dotfiles git repo that has a .config folder
+#     --no-config-link     keep ~/.config/german-anki a plain folder
 #     -y, --yes            don't ask before installing system packages
 set -euo pipefail
 
@@ -18,15 +22,17 @@ MPV_SCRIPTS_DIR="$CONFIG_HOME/mpv/scripts"
 BIN_DIR="$HOME/.local/bin"
 DICT_URL="https://www.reader-dict.com/file/de/dict-de-de.zip"
 
-NO_PACKAGES=0 SKIP_BROWSER=0 ASSUME_YES=0 DICT_ZIP="" MIGRATE_FROM=""
+NO_PACKAGES=0 SKIP_BROWSER=0 ASSUME_YES=0 DICT_ZIP="" MIGRATE_FROM="" CONFIG_TARGET="" NO_CONFIG_LINK=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --config-dir)   CONFIG_TARGET="$(realpath -m "$2")"; shift ;;
+        --no-config-link) NO_CONFIG_LINK=1 ;;
         --no-packages)  NO_PACKAGES=1 ;;
         --skip-browser) SKIP_BROWSER=1 ;;
         --dict-zip)     DICT_ZIP="$(realpath "$2")"; shift ;;
         --migrate-from) MIGRATE_FROM="$(realpath "$2")"; shift ;;
         -y|--yes)       ASSUME_YES=1 ;;
-        -h|--help)      sed -n '2,11p' "$0"; exit 0 ;;
+        -h|--help)      sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -94,6 +100,49 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "Python 3.1
 
 # ---------------------------------------------------------------- 2. config
 say "Config"
+
+# Default link target: <dotfiles>/.config/german-anki when this repo is a folder (or submodule)
+# of a dotfiles git repo that has a .config folder, like the other stow-style config links.
+if [[ -z "$CONFIG_TARGET" && $NO_CONFIG_LINK -eq 0 && -z "${GERMAN_ANKI_CONFIG:-}" ]]; then
+    parent="$(dirname "$REPO_DIR")"
+    if [[ -d "$parent/.config" ]] && command -v git >/dev/null \
+       && [[ "$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null)" == "$parent" ]]; then
+        CONFIG_TARGET="$parent/.config/german-anki"
+    fi
+fi
+[[ -n "${GERMAN_ANKI_CONFIG:-}" || $NO_CONFIG_LINK -eq 1 ]] && CONFIG_TARGET=""
+
+if [[ -n "$CONFIG_TARGET" ]]; then
+    if [[ "$(realpath -m "$CONFIG_DIR")" == "$CONFIG_TARGET" ]]; then
+        info "✓ $CONFIG_DIR -> $CONFIG_TARGET"
+    else
+        mkdir -p "$CONFIG_TARGET"
+        if [[ -L "$CONFIG_DIR" ]]; then
+            rm "$CONFIG_DIR"                        # a link to somewhere else: re-point it
+        elif [[ -d "$CONFIG_DIR" ]]; then           # a plain folder: move its files over
+            shopt -s dotglob nullglob
+            for f in "$CONFIG_DIR"/*; do
+                [[ -e "$CONFIG_TARGET/$(basename "$f")" ]] \
+                    && die "$CONFIG_TARGET/$(basename "$f") already exists — merge it with $f by hand, then re-run"
+            done
+            for f in "$CONFIG_DIR"/*; do mv "$f" "$CONFIG_TARGET/"; done
+            shopt -u dotglob nullglob
+            rmdir "$CONFIG_DIR"
+            info "moved the files of $CONFIG_DIR to $CONFIG_TARGET"
+        elif [[ -e "$CONFIG_DIR" ]]; then
+            die "$CONFIG_DIR exists and is not a folder"
+        fi
+        mkdir -p "$(dirname "$CONFIG_DIR")"
+        ln -s "$CONFIG_TARGET" "$CONFIG_DIR"
+        info "linked $CONFIG_DIR -> $CONFIG_TARGET"
+    fi
+    # the API key must never end up in git
+    if git -C "$CONFIG_TARGET" rev-parse >/dev/null 2>&1 && ! git -C "$CONFIG_TARGET" check-ignore -q .env; then
+        echo ".env" >> "$CONFIG_TARGET/.gitignore"
+        info "added .env to $CONFIG_TARGET/.gitignore (keeps the API key out of git)"
+    fi
+fi
+
 mkdir -p "$(dirname "$CONFIG_FILE")"
 if [[ -f "$CONFIG_FILE" ]]; then
     info "keeping existing $CONFIG_FILE"
@@ -148,7 +197,7 @@ if [[ -n "$MIGRATE_FROM" ]]; then
         cp -n "$MIGRATE_FROM/assets/"* "$DATA_DIR/assets/" 2>/dev/null || true
         info "assets: $(ls "$DATA_DIR/assets" | wc -l) files"
     fi
-    for f in To-do-german-words.md To-do-german-words-done.md; do
+    for f in To-do-german-words.md To-do-german-words-done.md sentence-mining.md sentence-mining-done.md; do
         if [[ ! -f "$MIGRATE_FROM/$f" ]]; then continue
         elif [[ -f "$DATA_DIR/$f" ]]; then warn "$f already exists in $DATA_DIR — not overwritten"
         else cp "$MIGRATE_FROM/$f" "$DATA_DIR/$f"; info "copied $f"; fi
