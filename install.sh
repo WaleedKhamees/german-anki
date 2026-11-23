@@ -185,6 +185,12 @@ ln -sfn "$VENV/bin/german-anki" "$CLI_LINK"
 info "command: $CLI_LINK"
 case ":$PATH:" in *":$(dirname "$CLI_LINK"):"*) ;; *) warn "$(dirname "$CLI_LINK") is not in your PATH" ;; esac
 
+# bash completion (loaded on first use by the bash-completion package)
+COMPLETION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+mkdir -p "$COMPLETION_DIR"
+ln -sfn "$REPO_DIR/completions/german-anki.bash" "$COMPLETION_DIR/german-anki"
+info "bash completion: $COMPLETION_DIR/german-anki (open a new shell)"
+
 # ---------------------------------------------------------------- 4. dictionary
 say "German dictionary"
 if [[ -n "$DICT_ZIP" ]]; then "$VENV/bin/german-anki" setup-dict --zip "$DICT_ZIP"

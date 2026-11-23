@@ -3,7 +3,7 @@ import argparse
 import sys
 
 
-def main(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(prog="german-anki", description=__doc__)
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("words", help="create cards for the words in the clipboard (default)")
@@ -14,13 +14,30 @@ def main(argv=None):
     p.add_argument("--skip-duplicates", action="store_true", help="skip pairs already in the deck")
     p = sub.add_parser("add-sentence", help="add one sentence row to the sentence deck (used by mpv)")
     p.add_argument("row")
+    p = sub.add_parser("regen", help="regenerate existing word cards in place (review history is kept)",
+                       description="Regenerate existing word cards in place; review history, Screenshot and "
+                                   "SourceAudio are kept. Picks the notes tagged 'regen' in the word deck, "
+                                   "or the given words, or --query. Close the note in Anki's browser first: "
+                                   "AnkiConnect does not update a note that is open in the editor.")
+    p.add_argument("words", nargs="*", help="words to regenerate (Word field, exact match)")
+    p.add_argument("--query", help="Anki search within the word deck instead, e.g. 'added:7' or 'flag:1'")
+    p.add_argument("--only", help="comma-separated parts to redo: definition,examples,conjugation,pronunciation "
+                                  "(default: all)")
+    p.add_argument("--hint", help="the meaning you want, passed to the LLM, e.g. 'ladder, not leader'")
+    p.add_argument("--dry-run", action="store_true", help="list the matching notes without changing them")
     sub.add_parser("sync", help="export the deck for subtitle colouring (used by mpv)")
+    sub.add_parser("list-words", help="print the deck's words from the last sync (used by shell completion)")
     sub.add_parser("backfill-tags", help="make no-screenshot / no-audio tags match the fields")
     p = sub.add_parser("setup-dict", help="download and build the German dictionary")
     p.add_argument("--zip", help="use this dict-de-de.zip instead of downloading")
     p.add_argument("--force", action="store_true", help="re-download / rebuild")
     sub.add_parser("doctor", help="check the installation")
     sub.add_parser("paths", help="print the config file and data locations")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.cmd in (None, "words"):
@@ -30,6 +47,24 @@ def main(argv=None):
     if args.cmd == "add-row":
         from . import cards
         return cards.process_row(args.row)
+    if args.cmd == "regen":
+        if args.words and args.query:
+            parser.error("give words or --query, not both")
+        from . import cards
+        try:
+            cards.parse_parts(args.only)
+        except ValueError as e:
+            parser.error(str(e))
+        return cards.run_regen(args.words, args.query, args.only, args.hint, args.dry_run)
+    if args.cmd == "list-words":
+        import json
+        from . import config
+        try:
+            words = json.loads(config.load().words_json.read_text(encoding="utf-8"))["words"]
+        except (OSError, ValueError, KeyError):
+            return 1
+        print("\n".join(sorted(words, key=str.lower)))
+        return 0
     if args.cmd == "backfill-tags":
         from . import cards
         cards.backfill_media_tags()

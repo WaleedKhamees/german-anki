@@ -32,12 +32,33 @@ Update with `git pull && ./install.sh`. Remove with `./uninstall.sh [--purge]`.
 | Command | What it does |
 |---|---|
 | `german-anki` | make cards for the words in the clipboard |
+| `german-anki regen` | regenerate the cards you tagged `regen` in Anki (see below) |
 | `german-anki sentences` | import sentence pairs from `sentence-mining.md` |
 | `german-anki sync` | refresh the word list used for subtitle colours |
 | `german-anki doctor` | check the installation |
 | `german-anki paths` | show where config and data are stored |
 
-Run `german-anki --help` for the rest.
+Run `german-anki --help` for the rest. `install.sh` also sets up bash completion for
+subcommands, options and, after `regen`, the words in your deck.
+
+### Regenerating cards
+
+Tag bad cards `regen` in Anki (in the browser, or press `T` while reviewing), then run
+`german-anki regen`. Each note is updated in place, so its review history is kept. The
+`Screenshot` and `SourceAudio` from the video are never touched. When a note is done, its
+tag is removed.
+
+```sh
+german-anki regen                          # every note tagged `regen`
+german-anki regen Leiter Haus              # these words instead
+german-anki regen --query 'flag:1'         # any Anki search within the deck
+german-anki regen Leiter --hint 'ladder'   # tell the LLM which meaning you want
+german-anki regen --only examples          # redo only some parts: definition,examples,conjugation,pronunciation
+german-anki regen --dry-run                # just list what would be regenerated
+```
+
+Close the note in Anki's browser first. AnkiConnect doesn't update a note that is open in the
+editor. Old conjugation images are left unused; Tools → Check Media removes them.
 
 ## Configuration
 

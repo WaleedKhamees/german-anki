@@ -21,6 +21,10 @@ for src in "$REPO_DIR"/mpv/*/; do
     link="$CONFIG_HOME/mpv/scripts/$(basename "$src")"
     if [[ -L "$link" && "$(readlink "$link")" == "${src%/}" ]]; then rm "$link"; echo "removed $link"; fi
 done
+completion="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/german-anki"
+if [[ -L "$completion" && "$(readlink "$completion")" == "$REPO_DIR/completions/german-anki.bash" ]]; then
+    rm "$completion"; echo "removed $completion"
+fi
 if [[ -L "$CLI_LINK" ]]; then rm "$CLI_LINK"; echo "removed $CLI_LINK"; fi
 if [[ -d "$DATA_DIR/venv" ]]; then rm -rf "$DATA_DIR/venv"; echo "removed $DATA_DIR/venv"; fi
 

@@ -161,3 +161,45 @@ def test_sentence_row_parsing():
     assert parse_row(r"| a \| b | c |  |  |") == ("a | b", "c", None, None)
     assert parse_row("| Nur Deutsch |  |  |  |") is None     # English is required
     assert parse_row("not a row") is None
+
+
+def test_regen_selection_helpers():
+    from german_anki import cards
+    assert cards.parse_parts(None) == set(cards.REGEN_PARTS)
+    assert cards.parse_parts("Examples, definition") == {"examples", "definition"}
+    import pytest
+    with pytest.raises(ValueError):
+        cards.parse_parts("examples,audio")
+    assert cards.regen_query("De", []) == 'deck:"De" tag:regen'
+    assert cards.regen_query("De", [], "added:7") == 'deck:"De" (added:7)'
+    assert cards.regen_query("De", ["Haus", "a_b*"]) == r'deck:"De" (Word:"Haus" OR Word:"a\_b\*")'
+    assert cards.note_word("<b>Störung</b>&nbsp;") == "Störung"
+    assert cards.note_word("sich&nbsp;freuen") == "sich freuen"
+
+
+def test_resolve_is_verb_fallbacks():
+    from german_anki import cards
+    assert cards.resolve_is_verb(["Verb"], {"is_verb": False}, False) is True     # DWDS wins
+    assert cards.resolve_is_verb([], {"is_verb": "true"}, False) is True           # then the LLM
+    assert cards.resolve_is_verb([], {"is_verb": None}, True) is True              # then the table
+    assert cards.resolve_is_verb([], None, None) is None                           # unknown: leave tag
+
+
+def test_bash_completion_matches_cli():
+    import argparse
+    import re
+    from pathlib import Path
+    from german_anki.cli import build_parser
+    script = (Path(__file__).parent.parent / "completions" / "german-anki.bash").read_text()
+    sub = next(a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    listed = re.search(r'local commands="([^"]+)"', script).group(1).split()
+    assert sorted(listed) == sorted(sub.choices)
+    for name, parser in sub.choices.items():
+        for opt in (o for a in parser._actions for o in a.option_strings):
+            assert opt in script, f"{name} {opt} missing from the completion"
+
+
+def test_pick_tatoeba_examples_takes_the_longest():
+    from german_anki import cards
+    cands = [("a b", "x"), ("a b c d", "y"), ("a", "z"), ("a b c", "w")]
+    assert cards.pick_tatoeba_examples(cands) == "a b c d <br> y<br><br>a b c <br> w<br><br>a b <br> x"
