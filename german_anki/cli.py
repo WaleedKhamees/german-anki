@@ -3,18 +3,31 @@ import argparse
 import sys
 
 
+def _positive_int(value):
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="german-anki", description=__doc__)
     sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("words", help="create cards for the words in the clipboard (default)")
-    p = sub.add_parser("add-row", help="create/update the card for one to-do row (used by mpv)")
+    # example sentence length, for the commands that write word cards
+    length = argparse.ArgumentParser(add_help=False)
+    length.add_argument("--min-words", type=_positive_int, metavar="N",
+                        help="shortest example sentence, in words (default: EXAMPLE_MIN_WORDS in .env)")
+    length.add_argument("--max-words", type=_positive_int, metavar="N",
+                        help="longest example sentence, in words (default: EXAMPLE_MAX_WORDS in .env)")
+    sub.add_parser("words", parents=[length], help="create cards for the words in the clipboard (default)")
+    p = sub.add_parser("add-row", parents=[length], help="create/update the card for one to-do row (used by mpv)")
     p.add_argument("row")
     p = sub.add_parser("sentences", help="import sentence pairs (default file: <data>/sentence-mining.md)")
     p.add_argument("file", nargs="?", help="markdown table to import instead of the default file")
     p.add_argument("--skip-duplicates", action="store_true", help="skip pairs already in the deck")
     p = sub.add_parser("add-sentence", help="add one sentence row to the sentence deck (used by mpv)")
     p.add_argument("row")
-    p = sub.add_parser("regen", help="regenerate existing word cards in place (review history is kept)",
+    p = sub.add_parser("regen", parents=[length], help="regenerate existing word cards in place (review history is kept)",
                        description="Regenerate existing word cards in place; review history, Screenshot and "
                                    "SourceAudio are kept. Picks the notes tagged 'regen' in the word deck, "
                                    "or the given words, or --query. Close the note in Anki's browser first: "
@@ -31,6 +44,8 @@ def build_parser():
     p = sub.add_parser("setup-dict", help="download and build the German dictionary")
     p.add_argument("--zip", help="use this dict-de-de.zip instead of downloading")
     p.add_argument("--force", action="store_true", help="re-download / rebuild")
+    p = sub.add_parser("setup-anki", help="create the missing decks and note type in Anki")
+    p.add_argument("-y", "--yes", action="store_true", help="don't ask first")
     sub.add_parser("doctor", help="check the installation")
     sub.add_parser("paths", help="print the config file and data locations")
     return parser
@@ -40,22 +55,25 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.cmd in (None, "words"):
-        from . import cards
-        cards.run_clipboard()
-        return 0
-    if args.cmd == "add-row":
-        from . import cards
-        return cards.process_row(args.row)
-    if args.cmd == "regen":
-        if args.words and args.query:
+    if args.cmd in (None, "words", "add-row", "regen"):
+        if args.cmd == "regen" and args.words and args.query:
             parser.error("give words or --query, not both")
-        from . import cards
+        from . import cards, examples, verbformen
         try:
-            cards.parse_parts(args.only)
+            examples.set_length(getattr(args, "min_words", None), getattr(args, "max_words", None))
+            if args.cmd == "regen":
+                cards.parse_parts(args.only)
         except ValueError as e:
             parser.error(str(e))
-        return cards.run_regen(args.words, args.query, args.only, args.hint, args.dry_run)
+        try:
+            if args.cmd == "add-row":
+                return cards.process_row(args.row)
+            if args.cmd == "regen":
+                return cards.run_regen(args.words, args.query, args.only, args.hint, args.dry_run)
+            cards.run_clipboard()
+            return 0
+        finally:
+            verbformen.close()   # the browser is shared by all the words of the run
     if args.cmd == "list-words":
         import json
         from . import config
@@ -82,6 +100,9 @@ def main(argv=None):
         from . import config, dictionary
         dictionary.setup(config.load().dict_dir, zip_path=args.zip, force=args.force)
         return 0
+    if args.cmd == "setup-anki":
+        from . import anki_setup
+        return anki_setup.run(assume_yes=args.yes)
     if args.cmd == "doctor":
         from . import doctor
         return doctor.run()

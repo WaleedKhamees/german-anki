@@ -6,7 +6,7 @@ _german_anki() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="words add-row regen sentences add-sentence sync backfill-tags list-words setup-dict doctor paths"
+    local commands="words add-row regen sentences add-sentence sync backfill-tags list-words setup-dict setup-anki doctor paths"
     local parts="definition examples conjugation pronunciation"
 
     # the subcommand is the first word that is not an option
@@ -30,10 +30,10 @@ _german_anki() {
                     compopt -o nospace
                     COMPREPLY=($(compgen -P "$done_parts" -W "$parts" -- "$last"))
                     return ;;
-                --query | --hint) return ;;
+                --query | --hint | --min-words | --max-words) return ;;
             esac
             if [[ $cur == -* ]]; then
-                COMPREPLY=($(compgen -W "--query --only --hint --dry-run -h --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "--query --only --hint --min-words --max-words --dry-run -h --help" -- "$cur"))
                 return
             fi
             # words of the deck (from the last `german-anki sync`). Matched by hand, not with
@@ -51,6 +51,13 @@ _german_anki() {
             else
                 _filedir md
             fi
+            ;;
+        words | add-row)
+            [[ $prev == --min-words || $prev == --max-words ]] && return
+            COMPREPLY=($(compgen -W "--min-words --max-words -h --help" -- "$cur"))
+            ;;
+        setup-anki)
+            COMPREPLY=($(compgen -W "-y --yes -h --help" -- "$cur"))
             ;;
         setup-dict)
             if [[ $prev == --zip ]]; then

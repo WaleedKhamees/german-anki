@@ -6,68 +6,18 @@ The file (default <data>/sentence-mining.md) looks like:
     | ------ | ------- | ----- | ----- |
     | Die Sache wird langsam ernst | things are about to get serious | ![[die-sache-v1.webp\\|500x379]] | ![[die-sache-v1.ogg]] |
 Every row becomes two notes (German-front and English-front) in ANKI_SENTENCE_DECK,
-tagged `sentence-mining`; image and audio are optional and are searched in <data>/assets
-and OBSIDIAN_VAULT_PATH.
+tagged `sentence-mining`; image and audio are optional and are taken from <data>/assets.
 """
-import base64
-import io
 import re
-import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
 
-from PIL import Image
-
-from . import config
-from .images import fit_width
+from . import config, media
+from .media import notify
 from .anki import Anki, WORD, DEFINITION, SCREENSHOT, SOURCE_AUDIO
 
 TAG = "sentence-mining"
-
-
-def notify(title, message, is_error=False):
-    subprocess.run(["notify-send", "-u", "critical" if is_error else "normal", title, message])
-
-
-def find_media(settings, filename):
-    for root in (settings.assets_dir, settings.obsidian_vault):
-        if not root or not root.exists():
-            continue
-        if (root / filename).is_file():
-            return root / filename
-        found = next((p for p in root.rglob("*") if p.name.lower() == filename.lower()), None)
-        if found:
-            return found
-    print(f"[!] '{filename}' not found", file=sys.stderr)
-    return None
-
-
-def find_and_upload_audio(anki, settings, filename):
-    audio_file = find_media(settings, filename)
-    if not audio_file:
-        return None
-    media_filename = audio_file.name.lower()
-    anki("storeMediaFile", filename=media_filename, path=str(audio_file.resolve()))
-    return media_filename
-
-
-def find_and_upload_image(anki, settings, filename):
-    image_file = find_media(settings, filename)
-    if not image_file:
-        return None
-
-    with open(image_file, "rb") as f:
-        img = Image.open(f)
-        img.load()
-        img = img.convert("RGBA" if img.mode in ("RGBA", "LA") else "RGB")
-        img = fit_width(img)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG" if image_file.suffix.lower() == ".png" else "WEBP", optimize=True)
-
-    media_filename = image_file.name.lower()
-    anki("storeMediaFile", filename=media_filename, data=base64.b64encode(buf.getvalue()).decode("ascii"))
-    return media_filename
 
 
 def _media_name(cell):
@@ -147,8 +97,8 @@ def add_note(anki, settings, front, back, screenshot="", audio=""):
 
 def add_pair(anki, settings, german, english, image=None, audio=None):
     """Upload the media and add the German-front and English-front notes."""
-    image_filename = find_and_upload_image(anki, settings, image) if image else None
-    audio_filename = find_and_upload_audio(anki, settings, audio) if audio else None
+    image_filename = media.upload_image(anki, settings.assets_dir, image) if image else None
+    audio_filename = media.upload_audio(anki, settings.assets_dir, audio) if audio else None
     screenshot = f"<img src='{image_filename}'>" if image_filename else ""
     sound = f"[sound:{audio_filename}]" if audio_filename else ""
     add_note(anki, settings, german, english, screenshot, sound)

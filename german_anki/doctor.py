@@ -61,9 +61,9 @@ def run():
         return 1
     decks = anki("deckNames")
     check(s.deck in decks, f"deck '{s.deck}' exists",
-          "create it in Anki (or sync from AnkiWeb), or set ANKI_DECK")
+          "german-anki setup-anki (or sync from AnkiWeb, or set ANKI_DECK)")
     check(s.sentence_deck in decks, f"sentence deck '{s.sentence_deck}' exists",
-          "create it in Anki, or set ANKI_SENTENCE_DECK (only needed for `german-anki sentences`)",
+          "german-anki setup-anki, or set ANKI_SENTENCE_DECK (only needed for sentence cards)",
           warn_only=True)
     if s.note_type in anki("modelNames"):
         fields = anki("modelFieldNames", modelName=s.note_type)
@@ -72,7 +72,7 @@ def run():
               f"add the missing field(s) in Anki: {', '.join(missing)}")
     else:
         check(False, f"note type '{s.note_type}' exists",
-              "sync from AnkiWeb, or create it with the fields " + ", ".join(REQUIRED_FIELDS))
+              "german-anki setup-anki (or sync from AnkiWeb, or set ANKI_NOTE_TYPE)")
 
     print(f"\n{problems} problem(s) found" if problems else "\neverything looks good")
     return 1 if problems else 0

@@ -1,175 +1,33 @@
-"""Card creation: definition + examples (LLM/Tatoeba), conjugation table (verbformen),
-captured screenshot/audio, DWDS pronunciation. Used by `german-anki words` (clipboard)
-and `german-anki add-row` (called by the mpv capture script for every captured word)."""
+"""Word cards: puts the definition and examples (llm, examples), the conjugation table
+(verbformen), the article and pronunciation (dwds) and the captured screenshot/audio (media)
+together into Anki notes. Used by `german-anki words` (clipboard), `german-anki add-row` (called by
+the mpv capture script for every captured word) and `german-anki regen`."""
+import base64
+import concurrent.futures
+import html
+import json
 import os
 import re
-import json
 import time
-import base64
-import html
-import io
 import urllib.parse
-import requests
-import concurrent.futures
-import subprocess
-import threading
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-from PIL import Image
-
-from . import config
-from .images import fit_width
+from . import config, dwds, examples, llm, media, verbformen
 from .anki import (Anki, MEDIA_TAGS, NO_PRONUNCIATION_TAG, WORD, DEFINITION, CONJUGATION,
                    SCREENSHOT, SOURCE_AUDIO, EXAMPLES, PRONUNCIATION)
+from .examples import NUM_EXAMPLES
+from .media import notify
 
 # --- Configuration (from ~/.config/german-anki/.env) ---
 SETTINGS = config.load()
-OPENROUTER_API_KEY = SETTINGS.api_key
-ANKI_CONNECT_URL = SETTINGS.anki_url
 DECK_NAME = SETTINGS.deck
 MODEL_NAME = SETTINGS.note_type
-LLM_MODEL = SETTINGS.llm_model
-ASSET_DIR = str(SETTINGS.assets_dir)  # where the mpv capture script saves screenshots/audio
-MEDIA_SEARCH_DIRS = [d for d in (ASSET_DIR, SETTINGS.obsidian_vault and str(SETTINGS.obsidian_vault)) if d]
+ASSET_DIR = SETTINGS.assets_dir  # where the mpv capture script saves screenshots/audio
 AUDIO_EXTS = {".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac"}
 WORD_DELAY = 3  # seconds; retry backoff base (attempt n waits n * WORD_DELAY)
-VERBFORMEN_MIN_INTERVAL = 1.0  # seconds between verbformen page loads (politeness; the only rate-limited site)
-_verbformen_lock = threading.Lock()
-_verbformen_last = 0.0
 MAX_RETRIES = 3
 
-NUM_EXAMPLES = 3
-TATOEBA_URL = "https://api.tatoeba.org/unstable/sentences"
-TATOEBA_MIN_WORDS = 10   # short sentences ("Ich gebe auf.") show too little context
-TATOEBA_MAX_WORDS = 25
-TATOEBA_MAX_CANDIDATES = 25  # how many candidates the LLM gets to choose from
-
-
-def PROMPT(word, candidates, hint=None):
-    hint_block = (f"The card is for this meaning/use of the word: {hint}. "
-                  "Define and illustrate THAT meaning first.\n\n") if hint else ""
-    if candidates:
-        listing = "\n".join(f"{i}. {de} | {en}" for i, (de, en) in enumerate(candidates))
-        candidate_block = (
-            "Here are real example sentences from the Tatoeba corpus (index. German | English):\n"
-            f"{listing}\n\n"
-            f"'picked': a list of up to {NUM_EXAMPLES} indices from the list above. "
-            "Choose sentences that together cover the DIFFERENT common everyday meanings/uses of the word "
-            "(e.g. different senses, reflexive vs. non-reflexive, typical prepositions or collocations). "
-            "Prefer natural, everyday situations and avoid near-duplicates. "
-            "Among good candidates, prefer the longer ones that give more context. "
-            "Skip sentences that are odd, unnatural, mistranslated, or use the word in a rare sense. "
-            "Return [] if none are good.\n"
-            f"'examples': write ONLY as many new examples as needed so that picked + examples = {NUM_EXAMPLES}, "
-            "each covering an everyday use NOT already shown by the picked sentences.\n"
-        )
-    else:
-        candidate_block = (
-            "'picked': always [].\n"
-            f"'examples': write exactly {NUM_EXAMPLES} examples, each showing a DIFFERENT common everyday "
-            "meaning or use of the word (different senses, typical prepositions, collocations, or contexts). "
-            "If the word really has only one meaning, vary the situation instead (home, work, shopping, friends, travel).\n"
-        )
-
-    return (
-        f"You are making a German vocabulary flashcard for the word '{word}'.\n"
-        f"{hint_block}"
-        "Respond ONLY with a valid JSON object with exactly five keys: 'is_verb', 'article', 'explanation', 'picked', 'examples'.\n\n"
-
-        "'is_verb': true if the word is a German verb (infinitive, including reflexive like 'sich freuen' "
-        "or separable verbs), otherwise false. JSON boolean, not a string.\n\n"
-
-        "'article': if the word is a noun in the meaning you define, its article \"der\", \"die\" or \"das\"; "
-        "otherwise null.\n\n"
-
-        "'explanation': a short German definition of the word, AT MOST 20 words in total (A2/B1 vocabulary). "
-        "Use the words to cover the word's common meanings, not to explain one meaning at length. "
-        "No example situations, no filler. If the word has several clearly different common meanings, "
-        "give them separated by ' / ' and keep each short. "
-        "Plain text only: no HTML, and do not start with the article or the word itself.\n\n"
-
-        f"{candidate_block}"
-        "Each new example is an object {\"de\": \"...\", \"en\": \"...\"}: "
-        "'de' is ONE natural German sentence (10-20 words) the way people actually speak in daily life; "
-        "'en' is its fluent English translation. No numbering, no HTML, no extra text.\n\n"
-
-        "Do not use markdown or code fences. The response must be valid JSON."
-    )
-
-
-def fetch_tatoeba_examples(word):
-    """Return a list of (german, english) pairs from Tatoeba, or [] on failure."""
-    t0 = time.time()
-    params = {
-        "q": word,
-        "lang": "deu",
-        "trans:lang": "eng",
-        "showtrans": "matching",
-        "sort": "random",
-        "word_count": f"{TATOEBA_MIN_WORDS}-{TATOEBA_MAX_WORDS}",
-        "limit": 50,
-    }
-    try:
-        res = requests.get(TATOEBA_URL, params=params, timeout=8)
-        res.raise_for_status()
-        data = res.json().get("data", [])
-    except Exception as e:
-        print(f"[!] Tatoeba lookup failed for '{word}': {e}")
-        return []
-
-    pairs, seen = [], set()
-    for s in data:
-        de = (s.get("text") or "").strip()
-        if not de or s.get("is_unapproved") or de.lower() in seen:
-            continue
-        if not TATOEBA_MIN_WORDS <= len(de.split()) <= TATOEBA_MAX_WORDS:
-            continue
-        translations = [t for t in s.get("translations", []) if not t.get("is_unapproved")]
-        if not translations:
-            continue
-        # prefer direct translations over ones linked through a third language
-        translations.sort(key=lambda t: not t.get("is_direct"))
-        seen.add(de.lower())
-        pairs.append((de, translations[0]["text"].strip()))
-        if len(pairs) >= TATOEBA_MAX_CANDIDATES:
-            break
-
-    print(f"[⏱️] Tatoeba: {len(pairs)} usable sentence(s) in {time.time() - t0:.2f} seconds")
-    return pairs
-
-
-def format_example(de, en):
-    return f"{de} <br> {en}"
-
-
-CACHE_FILE = str(SETTINGS.cache_dir / "llm_cache.json")
-
-def notify(title, message, is_error=False):
-    urgency = "critical" if is_error else "normal"
-    subprocess.run(["notify-send", "-u", urgency, title, message])
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-def save_cache(cache_data):
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache_data, f, ensure_ascii=False, indent=4)
-
-def remove_from_cache(word):
-    cache = load_cache()
-    if word in cache:
-        del cache[word]
-        save_cache(cache)
-
-anki = Anki(ANKI_CONNECT_URL)
+anki = Anki(SETTINGS.anki_url)
 
 
 def find_existing_note(word):
@@ -194,13 +52,11 @@ def fill_missing_media(note, custom_image=None, custom_audio=None):
 
     updates = {}
     if custom_image:
-        uploaded = find_and_upload_obsidian_image(custom_image)
+        uploaded = media.upload_image(anki, ASSET_DIR, custom_image)
         if uploaded:
             updates[SCREENSHOT] = f"<img src='{uploaded}'>"
-        else:
-            print(f"[!] Image '{custom_image}' not found in {MEDIA_SEARCH_DIRS}")
     if custom_audio:
-        uploaded = find_and_upload_audio(custom_audio)
+        uploaded = media.upload_audio(anki, ASSET_DIR, custom_audio)
         if uploaded:
             updates[SOURCE_AUDIO] = f"[sound:{uploaded}]"
 
@@ -209,113 +65,6 @@ def fill_missing_media(note, custom_image=None, custom_audio=None):
         filled_tags = [MEDIA_TAGS[f] for f in updates]
         anki("removeTags", notes=[note["noteId"]], tags=" ".join(filled_tags))
     return list(updates)
-
-
-DWDS_WB_URL = "https://www.dwds.de/wb/"
-DWDS_AUDIO_RE = re.compile(r'<source[^>]+src="(https://www\.dwds\.de/audio/[^"]+\.mp3)"')
-
-
-# "Form / Grammatik" line of each DWDS entry, e.g. "Substantiv (Femininum)", "Verb", "Adjektiv".
-# A page has one such line per entry (homographs like "Leiter" have two).
-DWDS_GRAMMAR_RE = re.compile(
-    r'Form / Grammatik</span>.*?<span class="dwdswb-ft-blocktext"><span>([^<]+)</span>', re.S)
-GENDER_ARTICLES = {"Maskulinum": "der", "Femininum": "die", "Neutrum": "das"}
-ARTICLE_COLORS = {"der": "#00aaff", "die": "#ff0000", "das": "#00ff00"}
-
-
-def parse_dwds_grammar(page_html):
-    """-> list of grammar labels, one per DWDS entry on the page."""
-    return [g.strip() for g in DWDS_GRAMMAR_RE.findall(page_html)]
-
-
-def dwds_is_verb(grammar):
-    """True/False from the DWDS grammar labels, or None when DWDS had no entry.
-    Participles ("partizipiales Adjektiv") are not verbs."""
-    if not grammar:
-        return None
-    return any(g == "Verb" for g in grammar)
-
-
-def dwds_article(grammar, hint=None):
-    """Article(s) for a noun from the DWDS grammar labels, e.g. "die" or "der/die"; None if not a noun.
-    With several noun entries (homographs: die/der Leiter) `hint` (the article the LLM gave for the
-    meaning it defined) picks the entry; it is never used unless DWDS lists that article."""
-    entries = []
-    for g in grammar:
-        m = re.match(r"Substantiv \(([^)]*)\)", g)
-        if m:
-            arts = [GENDER_ARTICLES[x.strip()] for x in m.group(1).split(",") if x.strip() in GENDER_ARTICLES]
-            if arts:
-                entries.append(sorted(set(arts), key=list(ARTICLE_COLORS).index))
-    if not entries:
-        return None
-    chosen = next((e for e in entries if hint in e), entries[0]) if len(entries) > 1 else entries[0]
-    return "/".join(chosen)
-
-
-def dwds_is_noun(word, grammar):
-    """Should the card get a noun declension table? DWDS lists a noun entry, and — when the same
-    page also has a verb entry — the word was written capitalised (Essen vs essen)."""
-    if dwds_article(grammar) is None:
-        return False
-    return not dwds_is_verb(grammar) or word.strip()[:1].isupper()
-
-
-def noun_header(word, article):
-    """'<b><font color=..>die</font> Brille</b>: ' (each article coloured; 'der/die' for two genders)."""
-    arts = "/".join(f"<font color='{ARTICLE_COLORS[a]}'>{a}</font>" for a in article.split("/"))
-    word = word.strip()
-    return f"<b>{arts} {word[:1].upper() + word[1:]}</b>: "
-
-
-# a header the LLM wrote anyway (or one from an old cache entry)
-LLM_HEADER_RE = re.compile(r"^\s*<b>\s*(?:<font[^>]*>\s*(?:der|die|das)\s*</font>[\s/]*)+[^<]*</b>\s*:?\s*", re.I)
-
-
-def strip_llm_header(explanation):
-    return LLM_HEADER_RE.sub("", explanation).strip()
-
-
-def fetch_dwds(word, with_audio=True):
-    """Look `word` up on DWDS once. -> (grammar labels, media filename of the recording or None).
-    The recording is stored in Anki's media folder; with_audio=False only reads the grammar."""
-    t0 = time.time()
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        page = requests.get(DWDS_WB_URL + urllib.parse.quote(word.strip()), headers=headers, timeout=10)
-        if page.status_code == 404:
-            print(f"[!] DWDS: no entry for '{word}'")
-            return [], None
-        page.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[!] DWDS lookup failed for '{word}': {e}")
-        return [], None
-
-    grammar = parse_dwds_grammar(page.text)
-    if not with_audio:
-        print(f"[⏱️] DWDS lookup took: {time.time() - t0:.2f} seconds")
-        return grammar, None
-    match = DWDS_AUDIO_RE.search(page.text)
-    if not match:
-        print(f"[!] DWDS: no pronunciation for '{word}'")
-        return grammar, None
-    audio_url = match.group(1)
-    try:
-        audio = requests.get(audio_url, headers=headers, timeout=10)
-        audio.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[!] DWDS audio download failed for '{word}': {e}")
-        return grammar, None
-
-    media_filename = "dwds_" + os.path.basename(urllib.parse.urlparse(audio_url).path).lower()
-    anki("storeMediaFile", filename=media_filename, data=base64.b64encode(audio.content).decode("ascii"))
-    print(f"[⏱️] DWDS lookup + pronunciation ({media_filename}) took: {time.time() - t0:.2f} seconds")
-    return grammar, media_filename
-
-
-def fetch_dwds_pronunciation(word):
-    """Download the DWDS recording of `word` into Anki's media folder; media filename or None."""
-    return fetch_dwds(word)[1]
 
 
 def backfill_media_tags():
@@ -339,156 +88,6 @@ def backfill_media_tags():
             anki("removeTags", notes=filled, tags=tag, timeout=60)
         print(f"[+] {tag}: tagged {len(empty)}, untagged {len(filled)}")
 
-def get_openrouter_content(word, hint=None, use_cache=True, candidates=None):
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY is missing. Please check your .env file.")
-
-    cache = load_cache()
-    if use_cache and not hint and word in cache:
-        print(f"[*] Using cached LLM response for '{word}'. Skipping API call.")
-        return cache[word]
-
-    if candidates is None:
-        candidates = fetch_tatoeba_examples(word)
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    payload = {
-        "model": f"{LLM_MODEL}",
-        "reasoning": {"effort": "none"},
-        "messages": [{"role": "user", "content": PROMPT(word, candidates, hint)}]
-    }
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    t0 = time.time()
-    # 15 SECOND TIMEOUT FOR AI: If it hangs, it crashes instantly instead of freezing your script.
-    response = requests.post(url, json=payload, headers=headers, timeout=15)
-    response.raise_for_status()
-    print(f"[⏱️] AI Generation took: {time.time() - t0:.2f} seconds")
-
-    data = response.json()
-    content = data['choices'][0]['message']['content'].strip()
-
-    if content.startswith("```json"):
-        content = content[7:-3]
-    elif content.startswith("```"):
-        content = content[3:-3]
-
-    llm = json.loads(content.strip())
-
-    # Real Tatoeba sentences first, then LLM-written ones to fill the gaps.
-    examples = []
-    for idx in llm.get("picked") or []:
-        try:
-            idx = int(idx)
-        except (TypeError, ValueError):
-            continue
-        if 0 <= idx < len(candidates) and format_example(*candidates[idx]) not in examples:
-            examples.append(format_example(*candidates[idx]))
-    n_tatoeba = len(examples)
-
-    for ex in llm.get("examples") or []:
-        if len(examples) >= NUM_EXAMPLES:
-            break
-        if isinstance(ex, dict) and ex.get("de"):
-            examples.append(format_example(ex["de"].strip(), (ex.get("en") or "").strip()))
-        elif isinstance(ex, str) and ex.strip():
-            examples.append(ex.strip())
-
-    if not examples:
-        raise ValueError("LLM returned no usable examples")
-    print(f"[+] Examples: {n_tatoeba} from Tatoeba, {len(examples) - n_tatoeba} from LLM")
-
-    result = {
-        "is_verb": llm.get("is_verb"),
-        "article": llm.get("article"),
-        "explanation": llm.get("explanation", "Explanation missing."),
-        "examples": "<br><br>".join(examples),
-    }
-    cache[word] = result
-    save_cache(cache)
-    return result
-
-def _verbformen_route(route):
-    """Load only verbformen's own pages/scripts/styles: images, media and fonts are not needed for the
-    table, and third-party requests (consent manager, ads) only slow the page down (~1.5s -> ~0.9s)."""
-    req = route.request
-    host = urllib.parse.urlparse(req.url).hostname or ""
-    if req.resource_type in ("image", "media", "font") or not (host == "verbformen.com" or host.endswith(".verbformen.com")):
-        return route.abort()
-    return route.continue_()
-
-
-def _wait_for_verbformen_slot():
-    """Keep at least VERBFORMEN_MIN_INTERVAL between verbformen page loads of this process."""
-    global _verbformen_last
-    with _verbformen_lock:
-        wait = VERBFORMEN_MIN_INTERVAL - (time.monotonic() - _verbformen_last)
-        if wait > 0:
-            time.sleep(wait)
-        _verbformen_last = time.monotonic()
-
-
-def verbformen_urls(word, is_noun=False):
-    """Pages to try for the table. The search URL (/conjugation/?w=) prefers the verb when a word is
-    both (Schaden -> 'schaden'), so for nouns go to the noun declension page first."""
-    search = f"https://www.verbformen.com/conjugation/?w={urllib.parse.quote(word)}"
-    if not is_noun:
-        return [search]
-    noun = word.strip()
-    noun = noun[:1].upper() + noun[1:]
-    return [f"https://www.verbformen.com/declension/nouns/{urllib.parse.quote(noun)}.htm", search]
-
-
-def capture_conjugation(word, output_path, is_noun=False):
-    """Screenshot verbformen's conjugation/declension table for `word` into output_path.
-    For a noun only a declension page is accepted, never a verb's conjugation table."""
-    t0 = time.time()
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(color_scheme="dark")
-            page = context.new_page()
-            page.route("**/*", _verbformen_route)
-
-            problem = "no page tried"
-            for url in verbformen_urls(word, is_noun):
-                _wait_for_verbformen_slot()
-                response = page.goto(url)
-                if response is not None and response.status >= 400:
-                    problem = f"HTTP {response.status} for {url}"
-                    continue
-                if is_noun and not page.title().startswith("Declension"):
-                    problem = f"{url} is not a noun declension page"
-                    continue
-                try:
-                    page.evaluate("""
-                        const banner = document.querySelector('.cmpwrapper');
-                        if (banner) { banner.remove(); }
-                    """)
-                    page.wait_for_timeout(200)
-                except Exception:
-                    pass
-
-                locator = page.locator("section > .rAufZu")
-                count = locator.count()
-                if count < 2:
-                    problem = f"Only found {count} matching elements on {url}"
-                    continue
-
-                table_locator = locator.nth(1)
-                table_locator.wait_for(state="visible", timeout=10000)
-                table_locator.screenshot(path=output_path)
-                browser.close()
-                print(f"[⏱️] Screenshot capture took: {time.time() - t0:.2f} seconds ({url})")
-                return
-            browser.close()
-            raise Exception(problem)
-    except Exception as e:
-        print(f"[⏱️] Screenshot failed/skipped after {time.time() - t0:.2f} seconds: {e}")
-        raise
 
 def parse_single_line(line):
     cleaned = line.strip()
@@ -544,71 +143,6 @@ def parse_clipboard_input(raw_text):
     print(f"[+] Total unique words: {len(words)}")
     return words
 
-def find_media_file(filename):
-    """Look for a captured file in ./assets first, then the Obsidian vault."""
-    for d in MEDIA_SEARCH_DIRS:
-        root = Path(d).expanduser()
-        if not root.exists():
-            continue
-        direct = root / filename
-        if direct.is_file():
-            return direct
-        lower_filename = filename.lower()
-        match = next((p for p in root.rglob("*") if p.name.lower() == lower_filename), None)
-        if match:
-            return match
-    return None
-
-
-def find_and_upload_audio(filename):
-    audio_file = find_media_file(filename)
-    if not audio_file:
-        print(f"[!] Audio '{filename}' not found in {MEDIA_SEARCH_DIRS}")
-        return None
-    media_filename = audio_file.name.lower()
-    res = requests.post(ANKI_CONNECT_URL, json={
-        "action": "storeMediaFile",
-        "version": 6,
-        "params": {"filename": media_filename, "path": str(audio_file.resolve())}
-    }).json()
-    if res.get("error"):
-        raise Exception(f"Audio upload failed: {res['error']}")
-    return media_filename
-
-
-def find_and_upload_obsidian_image(filename):
-    t0 = time.time()
-    image_file = find_media_file(filename)
-    if not image_file:
-        return None
-
-    with open(image_file, "rb") as f:
-        img = Image.open(f)
-        img.load()
-        if img.mode in ("RGBA", "LA"):
-            img = img.convert("RGBA")
-        else:
-            img = img.convert("RGB")
-        img = fit_width(img)
-        buf = io.BytesIO()
-        fmt = "PNG" if image_file.suffix.lower() == ".png" else "WEBP"
-        img.save(buf, format=fmt, optimize=True)
-        encoded_image = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-    media_filename = image_file.name.lower()
-
-    media_payload = {
-        "action": "storeMediaFile",
-        "version": 6,
-        "params": {
-            "filename": media_filename,
-            "data": encoded_image
-        }
-    }
-    
-    requests.post(ANKI_CONNECT_URL, json=media_payload)
-    print(f"[⏱️] Vault Image Search & Upload took: {time.time() - t0:.2f} seconds")
-    return media_filename
 
 def upload_conjugation(word, image_path):
     """Store the verbformen table screenshot in Anki's media folder; -> media filename."""
@@ -631,10 +165,10 @@ def _as_text(value):
 def build_definition(word, llm_data, grammar):
     """Definition field: the LLM's explanation behind an article header. The article comes from
     DWDS only (the LLM's 'article' merely picks between DWDS entries for homographs)."""
-    explanation = strip_llm_header(_as_text(llm_data.get("explanation", "Explanation missing.")))
-    article = dwds_article(grammar, llm_data.get("article"))
+    explanation = llm.strip_llm_header(_as_text(llm_data.get("explanation", "Explanation missing.")))
+    article = dwds.article(grammar, llm_data.get("article"))
     if article:
-        explanation = noun_header(word, article) + explanation
+        explanation = dwds.noun_header(word, article) + explanation
         print(f"[+] '{word}': article '{article}' from DWDS")
     return explanation
 
@@ -642,7 +176,7 @@ def build_definition(word, llm_data, grammar):
 def resolve_is_verb(grammar, llm_data, has_table):
     """Verb or not: DWDS first; when DWDS has no entry, the LLM, then whether verbformen had a
     table. None when none of them could tell."""
-    is_verb = dwds_is_verb(grammar)
+    is_verb = dwds.is_verb(grammar)
     if is_verb is None and llm_data is not None:
         v = llm_data.get("is_verb")
         if isinstance(v, str):
@@ -653,11 +187,12 @@ def resolve_is_verb(grammar, llm_data, has_table):
     return is_verb
 
 
-def push_to_anki(word, explanation, examples, image_path=None, source_image=None, source_audio=None, is_verb=False, pronunciation=None):
+def push_to_anki(word, explanation, examples_html, image_path=None, source_image=None, source_audio=None,
+                 is_verb=False, pronunciation=None):
     conjugation = ""
     tags = ["all-german"]
     if is_verb:
-        tags.append("german-verb")
+        tags.append(VERB_TAG)
     if not source_image:
         tags.append(MEDIA_TAGS[SCREENSHOT])
     if not source_audio:
@@ -668,33 +203,22 @@ def push_to_anki(word, explanation, examples, image_path=None, source_image=None
     if image_path and os.path.exists(image_path):
         conjugation = f"<img src='{upload_conjugation(word, image_path)}'>"
 
-    note_payload = {
-        "action": "addNote",
-        "version": 6,
-        "params": {
-            "note": {
-                "deckName": DECK_NAME,
-                "modelName": MODEL_NAME,
-                "fields": {
-                    WORD: word,
-                    DEFINITION: explanation,
-                    CONJUGATION: conjugation,
-                    SCREENSHOT: f"<img src='{source_image}'>" if source_image else "",
-                    SOURCE_AUDIO: f"[sound:{source_audio}]" if source_audio else "",
-                    EXAMPLES: examples,
-                    PRONUNCIATION: f"[sound:{pronunciation}]" if pronunciation else "",  # DWDS recording
-                },
-                "options": {
-                    "allowDuplicate": False
-                },
-                "tags": tags
-            }
-        }
-    }
-    
-    res = requests.post(ANKI_CONNECT_URL, json=note_payload).json()
-    if res.get("error"):
-        raise Exception(res.get("error"))
+    anki("addNote", note={
+        "deckName": DECK_NAME,
+        "modelName": MODEL_NAME,
+        "fields": {
+            WORD: word,
+            DEFINITION: explanation,
+            CONJUGATION: conjugation,
+            SCREENSHOT: f"<img src='{source_image}'>" if source_image else "",
+            SOURCE_AUDIO: f"[sound:{source_audio}]" if source_audio else "",
+            EXAMPLES: examples_html,
+            PRONUNCIATION: f"[sound:{pronunciation}]" if pronunciation else "",  # DWDS recording
+        },
+        "options": {"allowDuplicate": False},
+        "tags": tags,
+    })
+
 
 def process_single_word(word, custom_image=None, custom_audio=None):
     existing = find_existing_note(word)
@@ -708,17 +232,16 @@ def process_single_word(word, custom_image=None, custom_audio=None):
 
     image_path = f"/tmp/verbformen_{word}.png"
     final_image_path = None
-    img_src = None
 
     # one worker per task: the screenshot task waits for the DWDS result, so it must never be
     # able to block DWDS from getting a worker
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        future_dwds = executor.submit(fetch_dwds, word)
-        future_llm = executor.submit(get_openrouter_content, word)
+        future_dwds = executor.submit(dwds.fetch, anki, word)
+        future_llm = executor.submit(llm.get_content, word)
         future_image = executor.submit(
-            lambda: capture_conjugation(word, image_path, is_noun=dwds_is_noun(word, future_dwds.result()[0])))
-        future_upload = executor.submit(find_and_upload_obsidian_image, custom_image) if custom_image else None
-        future_audio = executor.submit(find_and_upload_audio, custom_audio) if custom_audio else None
+            lambda: verbformen.capture(word, image_path, is_noun=dwds.is_noun(word, future_dwds.result()[0])))
+        future_upload = executor.submit(media.upload_image, anki, ASSET_DIR, custom_image) if custom_image else None
+        future_audio = executor.submit(media.upload_audio, anki, ASSET_DIR, custom_audio) if custom_audio else None
 
         llm_data = future_llm.result()
 
@@ -728,26 +251,23 @@ def process_single_word(word, custom_image=None, custom_audio=None):
         except Exception:
             final_image_path = None
 
-        if future_upload:
-            uploaded_filename = future_upload.result()
-            img_src = uploaded_filename if uploaded_filename else custom_image
-
+        img_src = future_upload.result() if future_upload else None
         audio_src = future_audio.result() if future_audio else None
         dwds_grammar, pronunciation = future_dwds.result()
 
     explanation = build_definition(word, llm_data, dwds_grammar)
-    examples = _as_text(llm_data.get("examples", "Examples missing."))
+    examples_html = _as_text(llm_data.get("examples", "Examples missing."))
     is_verb = resolve_is_verb(dwds_grammar, llm_data, final_image_path is not None)
     if is_verb:
         print(f"[+] '{word}' tagged as verb")
 
-    push_to_anki(word, explanation, examples, final_image_path, source_image=img_src, source_audio=audio_src,
+    push_to_anki(word, explanation, examples_html, final_image_path, source_image=img_src, source_audio=audio_src,
                  is_verb=is_verb, pronunciation=pronunciation)
 
     if final_image_path and os.path.exists(final_image_path):
         os.remove(final_image_path)
 
-    remove_from_cache(word)
+    llm.remove_from_cache(word)
     return True, "success"
 
 
@@ -820,6 +340,8 @@ def run_clipboard():
 
         notify("Anki Auto Started", f"Processing {total} word(s)...")
 
+        # a failed word doesn't stop the run: the rest still get their cards, and every
+        # failure is reported at the end (the words are still in the clipboard to retry)
         for idx, (word, custom_image, custom_audio) in enumerate(words):
             print(f"\n[{idx + 1}/{total}] Processing '{word}'...")
             ok, info, _ = process_with_retries(word, custom_image, custom_audio)
@@ -827,12 +349,6 @@ def run_clipboard():
                 succeeded.append(word)
             else:
                 failed.append((word, info))
-                notify(f"Anki Auto Stopped: '{word}' failed", info, is_error=True)
-                remaining = words[idx + 1:]
-                if remaining:
-                    skipped_words = [w for w, _, _ in remaining]
-                    print(f"[X] Stopping. Skipped remaining {len(remaining)} word(s): {', '.join(skipped_words)}")
-                break
 
         report_lines = []
         if succeeded:
@@ -896,12 +412,6 @@ def note_word(field_value):
     return " ".join(text.split())
 
 
-def pick_tatoeba_examples(candidates):
-    """Examples without the LLM: the longest of the (randomly drawn) Tatoeba candidates."""
-    longest = sorted(candidates, key=lambda c: len(c[0].split()), reverse=True)[:NUM_EXAMPLES]
-    return "<br><br>".join(format_example(de, en) for de, en in longest)
-
-
 def regenerate_note(note, parts, hint=None):
     """Rebuild the chosen parts of an existing note in place, so its review history is kept.
     Screenshot and SourceAudio come from the video and are never touched.
@@ -911,28 +421,28 @@ def regenerate_note(note, parts, hint=None):
         raise ValueError("the Word field is empty")
     note_id = note["noteId"]
     image_path = os.path.join("/tmp", f"verbformen_regen_{note_id}.png")
-    remove_from_cache(word)   # never reuse an old answer
+    llm.remove_from_cache(word)   # never reuse an old answer
 
     # DWDS gives the article (definition), noun-or-verb (conjugation) and the recording
     # (pronunciation); examples alone need none of it
     need_dwds = bool(parts & {"definition", "conjugation", "pronunciation"})
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_dwds = (executor.submit(fetch_dwds, word, with_audio="pronunciation" in parts)
+        future_dwds = (executor.submit(dwds.fetch, anki, word, with_audio="pronunciation" in parts)
                        if need_dwds else None)
         # examples alone: Tatoeba first, and the LLM (a paid request) only when it is short
         # of sentences; a hint or a new definition needs the LLM anyway
         tatoeba_examples, candidates = None, None
         if parts & {"definition", "examples"} == {"examples"} and not hint:
-            candidates = fetch_tatoeba_examples(word)
+            candidates = examples.fetch_tatoeba(word)
             if len(candidates) >= NUM_EXAMPLES:
-                tatoeba_examples = pick_tatoeba_examples(candidates)
+                tatoeba_examples = examples.pick_longest(candidates)
                 print(f"[+] Examples: {NUM_EXAMPLES} from Tatoeba, LLM not needed")
-        future_llm = (executor.submit(get_openrouter_content, word, hint=hint, use_cache=False,
+        future_llm = (executor.submit(llm.get_content, word, hint=hint, use_cache=False,
                                       candidates=candidates)
                       if parts & {"definition", "examples"} and tatoeba_examples is None else None)
         future_image = (executor.submit(
-            lambda: capture_conjugation(word, image_path, is_noun=dwds_is_noun(word, future_dwds.result()[0])))
+            lambda: verbformen.capture(word, image_path, is_noun=dwds.is_noun(word, future_dwds.result()[0])))
             if "conjugation" in parts else None)
 
         llm_data = future_llm.result() if future_llm else None
@@ -978,7 +488,7 @@ def regenerate_note(note, parts, hint=None):
         anki("addTags", notes=[note_id], tags=" ".join(add))
     anki("removeTags", notes=[note_id], tags=" ".join(remove))
 
-    remove_from_cache(word)
+    llm.remove_from_cache(word)
     return list(updates), kept
 
 

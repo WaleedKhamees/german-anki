@@ -19,8 +19,9 @@ DEFAULTS = {
     "ANKI_NOTE_TYPE": "Basic with example",
     "ANKI_SENTENCE_DECK": "🇩🇪 German Sentence Mining",
     "LLM_MODEL": "deepseek/deepseek-v4-flash:floor",
+    "EXAMPLE_MIN_WORDS": "10",
+    "EXAMPLE_MAX_WORDS": "25",
     "GERMAN_ANKI_DATA_DIR": "~/.local/share/german-anki",
-    "OBSIDIAN_VAULT_PATH": "",
     "GERMAN_ANKI_BIN": "~/.local/bin/german-anki",
 }
 
@@ -58,8 +59,9 @@ class Settings:
     note_type: str
     sentence_deck: str
     llm_model: str
+    example_min_words: int
+    example_max_words: int
     data_dir: Path
-    obsidian_vault: Path | None
 
     @property
     def assets_dir(self): return self.data_dir / "assets"
@@ -82,6 +84,13 @@ class Settings:
         return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "german-anki"
 
 
+def _int(raw, key):
+    try:
+        return int(raw[key])
+    except ValueError:
+        return int(DEFAULTS[key])
+
+
 def load():
     raw = dict(DEFAULTS)
     raw.update({k: v for k, v in read_env_file(CONFIG_PATH).items() if v != "" or k not in DEFAULTS})
@@ -93,6 +102,7 @@ def load():
         note_type=raw["ANKI_NOTE_TYPE"],
         sentence_deck=raw["ANKI_SENTENCE_DECK"],
         llm_model=raw["LLM_MODEL"],
+        example_min_words=_int(raw, "EXAMPLE_MIN_WORDS"),
+        example_max_words=_int(raw, "EXAMPLE_MAX_WORDS"),
         data_dir=_path(raw["GERMAN_ANKI_DATA_DIR"]),
-        obsidian_vault=_path(raw["OBSIDIAN_VAULT_PATH"]),
     )

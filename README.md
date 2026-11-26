@@ -14,15 +14,20 @@ Mine German vocabulary and sentences from videos in **mpv** straight into **Anki
 
 ## Install
 
+New to this? Follow the [beginner's guide](docs/GUIDE.md) step by step.
+
 ```sh
 git clone https://github.com/WaleedKhamees/german-anki && cd german-anki
 ./install.sh
 ```
 
+Start Anki with the **AnkiConnect** add-on (code `2055492159`) first, and the installer offers to
+create the decks and the note type. Already have them on AnkiWeb? Answer `n` and sync instead.
+
 Then:
 
 1. Put your `OPENROUTER_API_KEY` in `~/.config/german-anki/.env`.
-2. In Anki, install the **AnkiConnect** add-on (code `2055492159`).
+2. If Anki wasn't running during the install, start it and run `german-anki setup-anki`.
 3. Run `german-anki doctor` and fix anything that isn't ✓.
 
 Update with `git pull && ./install.sh`. Remove with `./uninstall.sh [--purge]`.
@@ -35,6 +40,7 @@ Update with `git pull && ./install.sh`. Remove with `./uninstall.sh [--purge]`.
 | `german-anki regen` | regenerate the cards you tagged `regen` in Anki (see below) |
 | `german-anki sentences` | import sentence pairs from `sentence-mining.md` |
 | `german-anki sync` | refresh the word list used for subtitle colours |
+| `german-anki setup-anki` | create the missing decks and note type in Anki |
 | `german-anki doctor` | check the installation |
 | `german-anki paths` | show where config and data are stored |
 
@@ -43,8 +49,10 @@ subcommands, options and, after `regen`, the words in your deck.
 
 ### Regenerating cards
 
-Tag bad cards `regen` in Anki (in the browser, or press `T` while reviewing), then run
-`german-anki regen`. Each note is updated in place, so its review history is kept. The
+Tag bad cards `regen` in Anki, then run `german-anki regen`. In the browser, select the
+cards and press `Ctrl+Shift+A`. While reviewing, press `E` to edit the note, then
+`Ctrl+Shift+T` to jump to its tags. For a single key during review, flag the card instead
+(`Ctrl+1`, red) and run `german-anki regen --query 'flag:1'`. Each note is updated in place, so its review history is kept. The
 `Screenshot` and `SourceAudio` from the video are never touched. When a note is done, its
 tag is removed.
 
@@ -55,6 +63,7 @@ german-anki regen --query 'flag:1'         # any Anki search within the deck
 german-anki regen Leiter --hint 'ladder'   # tell the LLM which meaning you want
 german-anki regen --only examples          # redo only some parts: definition,examples,conjugation,pronunciation
 german-anki regen --dry-run                # just list what would be regenerated
+german-anki regen Haus --only examples --min-words 6 --max-words 12   # shorter examples
 ```
 
 Close the note in Anki's browser first. AnkiConnect doesn't update a note that is open in the
@@ -64,6 +73,10 @@ editor. Old conjugation images are left unused; Tools → Check Media removes th
 
 All settings (deck names, note type, hotkeys, colours) live in
 `~/.config/german-anki/.env`. See `.env.example` for every option.
+
+Example sentences are 10–25 words long by default (`EXAMPLE_MIN_WORDS`, `EXAMPLE_MAX_WORDS`).
+`german-anki words`, `add-row` and `regen` take `--min-words N` / `--max-words N` to change
+that for one run.
 
 The note type (default `Basic with example`) needs the fields
 `Word, Definition, Conjugation, Screenshot, SourceAudio, Examples, Pronunciation`.

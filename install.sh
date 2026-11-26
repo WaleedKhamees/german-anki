@@ -11,7 +11,8 @@
 #                          to it. Default: <dotfiles>/.config/german-anki when this repo lives
 #                          inside a dotfiles git repo that has a .config folder
 #     --no-config-link     keep ~/.config/german-anki a plain folder
-#     -y, --yes            don't ask before installing system packages
+#     --no-anki-setup      don't create the decks and note type in Anki
+#     -y, --yes            don't ask before installing system packages or creating the Anki decks
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,17 +23,18 @@ MPV_SCRIPTS_DIR="$CONFIG_HOME/mpv/scripts"
 BIN_DIR="$HOME/.local/bin"
 DICT_URL="https://www.reader-dict.com/file/de/dict-de-de.zip"
 
-NO_PACKAGES=0 SKIP_BROWSER=0 ASSUME_YES=0 DICT_ZIP="" MIGRATE_FROM="" CONFIG_TARGET="" NO_CONFIG_LINK=0
+NO_PACKAGES=0 SKIP_BROWSER=0 ASSUME_YES=0 DICT_ZIP="" MIGRATE_FROM="" CONFIG_TARGET="" NO_CONFIG_LINK=0 NO_ANKI_SETUP=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config-dir)   CONFIG_TARGET="$(realpath -m "$2")"; shift ;;
         --no-config-link) NO_CONFIG_LINK=1 ;;
         --no-packages)  NO_PACKAGES=1 ;;
         --skip-browser) SKIP_BROWSER=1 ;;
+        --no-anki-setup) NO_ANKI_SETUP=1 ;;
         --dict-zip)     DICT_ZIP="$(realpath "$2")"; shift ;;
         --migrate-from) MIGRATE_FROM="$(realpath "$2")"; shift ;;
         -y|--yes)       ASSUME_YES=1 ;;
-        -h|--help)      sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help)      sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
@@ -234,7 +236,16 @@ else
     warn "Anki not found — install it: https://apps.ankiweb.net  (Arch: yay -S anki-bin)"
 fi
 info "Needs the AnkiConnect add-on: Anki → Tools → Add-ons → Get Add-ons → code 2055492159"
-info "Log in to AnkiWeb and sync, so the deck and note type arrive on this machine."
+if [[ $NO_ANKI_SETUP -eq 1 ]]; then
+    warn "skipped the decks and note type (run: german-anki setup-anki)"
+else
+    setup_args=(); [[ $ASSUME_YES -eq 1 ]] && setup_args=(--yes)
+    setup_status=0
+    "$VENV/bin/german-anki" setup-anki "${setup_args[@]}" || setup_status=$?
+    if [[ $setup_status -eq 3 ]]; then
+        warn "start Anki with the add-on installed, then run: german-anki setup-anki"
+    fi
+fi
 
 # ---------------------------------------------------------------- 8. check
 say "Checking the installation (german-anki doctor)"
