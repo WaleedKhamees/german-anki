@@ -23,14 +23,14 @@ def check_length(min_words, max_words):
 
 
 def set_length(min_words=None, max_words=None):
-    """Override the .env example length for this run; None keeps that bound."""
+    """Set the example length for this run (or worker request); None takes that bound from .env."""
     global MIN_WORDS, MAX_WORDS, length_overridden
-    lo = MIN_WORDS if min_words is None else min_words
-    hi = MAX_WORDS if max_words is None else max_words
+    lo = _settings.example_min_words if min_words is None else min_words
+    hi = _settings.example_max_words if max_words is None else max_words
     check_length(lo, hi)
-    if (lo, hi) != (MIN_WORDS, MAX_WORDS):
-        MIN_WORDS, MAX_WORDS = lo, hi
-        length_overridden = True   # cached LLM answers were made for the old length
+    MIN_WORDS, MAX_WORDS = lo, hi
+    # cached LLM answers were made for the .env length
+    length_overridden = (lo, hi) != (_settings.example_min_words, _settings.example_max_words)
 
 
 def format_example(de, en):
@@ -82,3 +82,16 @@ def pick_longest(candidates):
     """Examples without the LLM: the longest of the (randomly drawn) Tatoeba candidates."""
     longest = sorted(candidates, key=lambda c: len(c[0].split()), reverse=True)[:NUM_EXAMPLES]
     return "<br><br>".join(format_example(de, en) for de, en in longest)
+
+
+def merge(candidates, llm_examples):
+    """Examples field: the longest Tatoeba sentences (real ones first), topped up with the
+    LLM's ("de <br> en<br><br>..."). -> (field html, how many came from Tatoeba)."""
+    picked = [e for e in pick_longest(candidates).split("<br><br>") if e]
+    n_tatoeba = len(picked)
+    for ex in (llm_examples or "").split("<br><br>"):
+        if len(picked) >= NUM_EXAMPLES:
+            break
+        if ex.strip() and ex.strip() not in picked:
+            picked.append(ex.strip())
+    return "<br><br>".join(picked), n_tatoeba

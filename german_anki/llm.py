@@ -158,7 +158,8 @@ def get_content(word, hint=None, use_cache=True, candidates=None):
 
     if not picked:
         raise ValueError("LLM returned no usable examples")
-    print(f"[+] Examples: {n_tatoeba} from Tatoeba, {len(picked) - n_tatoeba} from LLM")
+    if candidates:   # without candidates the caller combines them with Tatoeba itself
+        print(f"[+] Examples: {n_tatoeba} from Tatoeba, {len(picked) - n_tatoeba} from LLM")
 
     result = {
         "is_verb": llm.get("is_verb"),

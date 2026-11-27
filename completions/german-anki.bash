@@ -6,7 +6,7 @@ _german_anki() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="words add-row regen sentences add-sentence sync backfill-tags list-words setup-dict setup-anki doctor paths"
+    local commands="words add-row serve regen sentences add-sentence sync backfill-tags list-words setup-dict setup-anki doctor paths"
     local parts="definition examples conjugation pronunciation"
 
     # the subcommand is the first word that is not an option
@@ -52,9 +52,13 @@ _german_anki() {
                 _filedir md
             fi
             ;;
-        words | add-row)
+        words)
             [[ $prev == --min-words || $prev == --max-words ]] && return
             COMPREPLY=($(compgen -W "--min-words --max-words -h --help" -- "$cur"))
+            ;;
+        add-row)
+            [[ $prev == --min-words || $prev == --max-words ]] && return
+            COMPREPLY=($(compgen -W "--min-words --max-words --no-worker -h --help" -- "$cur"))
             ;;
         setup-anki)
             COMPREPLY=($(compgen -W "-y --yes -h --help" -- "$cur"))

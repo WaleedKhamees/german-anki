@@ -17,6 +17,9 @@ conf_get() {
 DATA_DIR="$(conf_get GERMAN_ANKI_DATA_DIR "$HOME/.local/share/german-anki")"
 CLI_LINK="$(conf_get GERMAN_ANKI_BIN "$HOME/.local/bin/german-anki")"
 
+# stop the background worker of `german-anki add-row` (it runs from the venv removed below)
+pkill -TERM -f "german_anki.cli serve" 2>/dev/null && echo "stopped the background worker" || true
+
 for src in "$REPO_DIR"/mpv/*/; do
     link="$CONFIG_HOME/mpv/scripts/$(basename "$src")"
     if [[ -L "$link" && "$(readlink "$link")" == "${src%/}" ]]; then rm "$link"; echo "removed $link"; fi

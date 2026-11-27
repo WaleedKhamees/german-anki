@@ -31,11 +31,9 @@ anki = Anki(SETTINGS.anki_url)
 
 
 def find_existing_note(word):
-    """Return notesInfo dict of the existing note for this word, or None."""
-    ids = anki("findNotes", timeout=2, query=f'deck:"{DECK_NAME}" Word:"{word}"')
-    if not ids:
-        return None
-    return anki("notesInfo", notes=ids[:1])[0]
+    """Return notesInfo dict of the existing note for this word, or None (one request)."""
+    notes = anki("notesInfo", timeout=5, query=f'deck:"{DECK_NAME}" Word:"{word}"')
+    return notes[0] if notes else None
 
 
 def fill_missing_media(note, custom_image=None, custom_audio=None):
@@ -220,6 +218,32 @@ def push_to_anki(word, explanation, examples_html, image_path=None, source_image
     })
 
 
+def guess_is_noun(word):
+    """The table page to try before DWDS has answered: German nouns are capitalised."""
+    return word.strip()[:1].isupper()
+
+
+TATOEBA_GRACE = 0.3  # seconds Tatoeba may take beyond the other lookups before the LLM's examples are used
+
+
+def capture_table(word, image_path, is_noun):
+    """verbformen screenshot into image_path; -> the page's URL, or None (and no stale file)."""
+    try:
+        return verbformen.capture(word, image_path, is_noun=is_noun)
+    except Exception:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+        return None
+
+
+def table_needs_redo(word, guess_noun, is_noun, table_url):
+    """Was the table taken with the wrong guess? Not when the guess ended on the very page the
+    right attempt would use (a capitalised non-noun like 'Schön' lands on the search page either way)."""
+    if is_noun == guess_noun:
+        return False
+    return not (not is_noun and table_url == verbformen.urls(word, False)[0])
+
+
 def process_single_word(word, custom_image=None, custom_audio=None):
     existing = find_existing_note(word)
     if existing:
@@ -231,32 +255,44 @@ def process_single_word(word, custom_image=None, custom_audio=None):
         return False, "duplicate"
 
     image_path = f"/tmp/verbformen_{word}.png"
-    final_image_path = None
 
-    # one worker per task: the screenshot task waits for the DWDS result, so it must never be
-    # able to block DWDS from getting a worker
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # Everything starts at once; nothing waits for another site (a card takes as long as its
+    # slowest lookup). The table page is guessed from the spelling and checked against DWDS
+    # afterwards; the LLM writes its own examples instead of choosing among Tatoeba's.
+    guess_noun = guess_is_noun(word)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+    try:
         future_dwds = executor.submit(dwds.fetch, anki, word)
-        future_llm = executor.submit(llm.get_content, word)
-        future_image = executor.submit(
-            lambda: verbformen.capture(word, image_path, is_noun=dwds.is_noun(word, future_dwds.result()[0])))
+        future_tatoeba = executor.submit(examples.fetch_tatoeba, word)
+        future_llm = executor.submit(llm.get_content, word, candidates=[])
+        future_image = executor.submit(capture_table, word, image_path, guess_noun)
         future_upload = executor.submit(media.upload_image, anki, ASSET_DIR, custom_image) if custom_image else None
         future_audio = executor.submit(media.upload_audio, anki, ASSET_DIR, custom_audio) if custom_audio else None
 
         llm_data = future_llm.result()
-
-        try:
-            future_image.result()
-            final_image_path = image_path
-        except Exception:
-            final_image_path = None
-
         img_src = future_upload.result() if future_upload else None
         audio_src = future_audio.result() if future_audio else None
         dwds_grammar, pronunciation = future_dwds.result()
+        table_url = future_image.result()
+        try:   # Tatoeba is often the slowest; don't let it hold up the card
+            tatoeba = future_tatoeba.result(timeout=TATOEBA_GRACE)
+        except concurrent.futures.TimeoutError:
+            print(f"[!] Tatoeba too slow; using the LLM's examples")
+            tatoeba = []
+    finally:
+        executor.shutdown(wait=False)   # a slow Tatoeba request finishes in the background
+
+    is_noun = dwds.is_noun(word, dwds_grammar)
+    if table_needs_redo(word, guess_noun, is_noun, table_url):   # rare: Essen vs essen
+        print(f"[!] '{word}': table guessed {'noun' if guess_noun else 'verb'}, DWDS says otherwise; redoing it")
+        table_url = capture_table(word, image_path, is_noun)
+    final_image_path = image_path if table_url else None
 
     explanation = build_definition(word, llm_data, dwds_grammar)
-    examples_html = _as_text(llm_data.get("examples", "Examples missing."))
+    examples_html, n_tatoeba = examples.merge(tatoeba, _as_text(llm_data.get("examples", "")))
+    if not examples_html:
+        raise ValueError("no example sentences from Tatoeba or the LLM")
+    print(f"[+] Examples: {n_tatoeba} from Tatoeba, {examples_html.count('<br><br>') + 1 - n_tatoeba} from LLM")
     is_verb = resolve_is_verb(dwds_grammar, llm_data, final_image_path is not None)
     if is_verb:
         print(f"[+] '{word}' tagged as verb")

@@ -51,9 +51,14 @@ def _str_keys(d):
 def fetch_deck(anki, deck_name, prev):
     """-> (note_words, other_notes, words, mods, full_fetch)"""
     deck = f'deck:"{deck_name}"'
-    ids = anki("findNotes", timeout=3, query=deck)
-    no_img = set(anki("findNotes", query=f"{deck} {SCREENSHOT}:"))
-    no_audio = set(anki("findNotes", query=f"{deck} {SOURCE_AUDIO}:"))
+    # one request instead of four (this runs every few seconds)
+    ids, no_img, no_audio, edited = anki.multi(
+        ("findNotes", {"query": deck}),
+        ("findNotes", {"query": f"{deck} {SCREENSHOT}:"}),
+        ("findNotes", {"query": f"{deck} {SOURCE_AUDIO}:"}),
+        ("findNotes", {"query": f"{deck} edited:1"}),
+        timeout=3)
+    no_img, no_audio = set(no_img), set(no_audio)
 
     note_words = _int_keys(prev.get("notes"))
     other_notes = _int_keys(prev.get("other_notes"))
@@ -64,7 +69,7 @@ def fetch_deck(anki, deck_name, prev):
     else:
         known = note_words.keys() | other_notes.keys()
         need = [i for i in ids if i not in known]
-        recent = [i for i in anki("findNotes", query=f"{deck} edited:1") if i in known]
+        recent = [i for i in edited if i in known]
         if recent:
             for m in anki("notesModTime", notes=recent):
                 if mods.get(m["noteId"]) != m["mod"]:

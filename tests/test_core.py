@@ -275,18 +275,19 @@ def test_setup_anki_templates_use_known_fields():
 
 def test_example_length_override(monkeypatch):
     import pytest
-    from german_anki import cards, dwds, examples, llm, verbformen
-    monkeypatch.setattr(examples, "MIN_WORDS", 10)
-    monkeypatch.setattr(examples, "MAX_WORDS", 25)
-    monkeypatch.setattr(examples, "length_overridden", False)
-    examples.set_length(None, None)              # nothing passed: the .env values stay
-    assert (examples.MIN_WORDS, examples.MAX_WORDS, examples.length_overridden) == (10, 25, False)
+    from types import SimpleNamespace
+    from german_anki import examples, llm
+    monkeypatch.setattr(examples, "_settings", SimpleNamespace(example_min_words=10, example_max_words=25))
+    for name in ("MIN_WORDS", "MAX_WORDS", "length_overridden"):
+        monkeypatch.setattr(examples, name, getattr(examples, name))
     examples.set_length(None, 15)                # one bound: the other comes from .env
     assert (examples.MIN_WORDS, examples.MAX_WORDS, examples.length_overridden) == (10, 15, True)
     assert "(10-15 words)" in llm.PROMPT("Haus", [])
+    examples.set_length(None, None)              # back to .env (each worker request starts here)
+    assert (examples.MIN_WORDS, examples.MAX_WORDS, examples.length_overridden) == (10, 25, False)
     with pytest.raises(ValueError):
-        examples.set_length(20, None)            # 20 > max 15
-    assert (examples.MIN_WORDS, examples.MAX_WORDS) == (10, 15)
+        examples.set_length(30, None)            # 30 > .env max 25
+    assert (examples.MIN_WORDS, examples.MAX_WORDS) == (10, 25)
 
 
 def test_example_length_settings(tmp_path, monkeypatch):
@@ -324,3 +325,75 @@ def test_clipboard_run_continues_after_a_failure(monkeypatch):
     monkeypatch.setattr(cards, "process_with_retries", fake)
     cards.run_clipboard()
     assert tried == ["eins", "zwei", "drei"]
+
+
+def test_worker_round_trip(tmp_path, monkeypatch):
+    """add-row's client against a real worker loop, with the card making stubbed out."""
+    import threading
+    from german_anki import cards, server
+    sock = tmp_path / "w.sock"
+    monkeypatch.setattr(server, "socket_path", lambda: sock)
+    monkeypatch.setattr(server, "IDLE_SECONDS", 2)
+    monkeypatch.setattr(server, "_start_worker", lambda: None)
+    monkeypatch.setattr(cards.verbformen, "close", lambda: None)
+
+    def fake_row(row):
+        print(f"STATUS: added\nRESULT: card for {row}")
+        return 0 if row != "bad" else 1
+    monkeypatch.setattr(cards, "process_row", fake_row)
+    t = threading.Thread(target=server.serve, daemon=True)
+    t.start()
+    for _ in range(100):
+        if sock.exists():
+            break
+        threading.Event().wait(0.02)
+
+    import io, sys
+    out = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(out, encoding="utf-8"))
+    assert server.run_add_row({"row": "Haus"}) == 0
+    assert server.run_add_row({"row": "bad"}) == 1
+    sys.stdout.flush()
+    text = out.getvalue().decode()
+    assert "RESULT: card for Haus" in text and "RESULT: card for bad" in text
+    monkeypatch.undo()
+
+
+def test_worker_unavailable_falls_back(tmp_path, monkeypatch):
+    from german_anki import server
+    monkeypatch.setattr(server, "socket_path", lambda: tmp_path / "none.sock")
+    monkeypatch.setattr(server, "_start_worker", lambda: None)
+    monkeypatch.setattr(server, "START_TIMEOUT", 0.1)
+    assert server.run_add_row({"row": "Haus"}) is None     # cli then processes the row itself
+
+
+def test_examples_merge_tatoeba_first_then_llm():
+    from german_anki import examples
+    llm_html = "L1 <br> e1<br><br>L2 <br> e2<br><br>L3 <br> e3"
+    assert examples.merge([], llm_html) == (llm_html, 0)
+    assert examples.merge([("a b c", "x")], llm_html) == ("a b c <br> x<br><br>L1 <br> e1<br><br>L2 <br> e2", 1)
+    four = [("a", "1"), ("a b c d", "4"), ("a b", "2"), ("a b c", "3")]
+    assert examples.merge(four, llm_html) == ("a b c d <br> 4<br><br>a b c <br> 3<br><br>a b <br> 2", 3)
+    assert examples.merge([], "") == ("", 0)
+
+
+def test_table_guess_and_redo(monkeypatch, tmp_path):
+    from german_anki import cards
+    assert cards.guess_is_noun("Haus") and not cards.guess_is_noun("laufen")
+    assert not cards.guess_is_noun("sich freuen")
+    img = tmp_path / "t.png"
+
+    def failing(word, path, is_noun):
+        open(path, "w").close()     # a half-written file must not survive a failure
+        raise RuntimeError("no table")
+    monkeypatch.setattr(cards.verbformen, "capture", failing)
+    assert cards.capture_table("x", str(img), False) is None and not img.exists()
+    monkeypatch.setattr(cards.verbformen, "capture", lambda w, p, is_noun: open(p, "w").close() or "u")
+    assert cards.capture_table("x", str(img), True) == "u" and img.exists()
+
+    search = cards.verbformen.urls("Schön")[0]
+    assert not cards.table_needs_redo("Haus", True, True, "any")          # guessed right
+    assert not cards.table_needs_redo("Schön", True, False, search)       # same page either way
+    assert cards.table_needs_redo("Schön", True, False, None)             # guess found nothing
+    assert cards.table_needs_redo("essen", False, True, search)           # needs the noun page
+

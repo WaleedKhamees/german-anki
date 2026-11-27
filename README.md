@@ -44,6 +44,11 @@ Update with `git pull && ./install.sh`. Remove with `./uninstall.sh [--purge]`.
 | `german-anki doctor` | check the installation |
 | `german-anki paths` | show where config and data are stored |
 
+Captures from mpv go through a background worker (`german-anki serve`, started on demand) that
+keeps the browser for conjugation tables open, so each capture skips 1–2 s of start-up. It stops
+after 15 idle minutes and restarts by itself after config or code changes; its log is
+`~/.cache/german-anki/worker.log`.
+
 Run `german-anki --help` for the rest. `install.sh` also sets up bash completion for
 subcommands, options and, after `regen`, the words in your deck.
 

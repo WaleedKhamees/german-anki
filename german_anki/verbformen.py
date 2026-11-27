@@ -99,8 +99,8 @@ def _capture(word, output_path, is_noun):
 
 
 def capture(word, output_path, is_noun=False):
-    """Screenshot verbformen's conjugation/declension table for `word` into output_path.
-    For a noun only a declension page is accepted, never a verb's conjugation table."""
+    """Screenshot verbformen's conjugation/declension table for `word` into output_path; -> the URL
+    it came from. For a noun only a declension page is accepted, never a verb's conjugation table."""
     global _executor
     t0 = time.time()
     with _lock:
@@ -113,6 +113,7 @@ def capture(word, output_path, is_noun=False):
         print(f"[⏱️] Screenshot failed/skipped after {time.time() - t0:.2f} seconds: {e}")
         raise
     print(f"[⏱️] Screenshot capture took: {time.time() - t0:.2f} seconds ({url})")
+    return url
 
 
 def _shutdown():

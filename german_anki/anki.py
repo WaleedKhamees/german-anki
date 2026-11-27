@@ -33,3 +33,13 @@ class Anki:
         if res.get("error"):
             raise AnkiError(f"AnkiConnect {action}: {res['error']}")
         return res["result"]
+
+    def multi(self, *calls, timeout=30):
+        """Several actions in one request: each AnkiConnect request costs ~50 ms however little
+        it does. calls are (action, params) pairs; -> their results, in order."""
+        results = self("multi", timeout=timeout, actions=[
+            {"action": action, "version": 6, "params": params} for action, params in calls])
+        for (action, _), r in zip(calls, results):
+            if r.get("error"):
+                raise AnkiError(f"AnkiConnect {action}: {r['error']}")
+        return [r["result"] for r in results]

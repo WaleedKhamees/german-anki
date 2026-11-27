@@ -19,6 +19,7 @@ is already in the deck.
 | `german_anki/examples.py` | example length limits, Tatoeba lookup |
 | `german_anki/dwds.py` | article, verb/noun status and pronunciation from DWDS |
 | `german_anki/verbformen.py` | conjugation table screenshot; one shared browser per run |
+| `german_anki/server.py` | `serve`: background worker for `add-row` (warm imports and browser); `add-row` is its client |
 | `german_anki/media.py` | captured screenshot/audio from `<data>/assets` → Anki (words and sentences) |
 | `german_anki/sentences.py` | sentence cards (two notes per pair) |
 | `german_anki/sync.py` | exports the deck to `anki-words.json` for the subtitle colours |
@@ -31,7 +32,8 @@ is already in the deck.
 | `mpv/german-subs/main.lua` | subtitle colouring; `ignore.txt` lists words never coloured |
 | `install.sh`, `uninstall.sh`, `completions/` | setup, removal, bash completion |
 
-Data flow: mpv → row in `To-do-german-words.md` → `german-anki add-row` → AnkiConnect. mpv then
+Data flow: mpv → row in `To-do-german-words.md` → `german-anki add-row` → (Unix socket → the
+`german-anki serve` worker, started on demand; in-process if that fails) → AnkiConnect. mpv then
 sends `german-subs-refresh`, which runs `german-anki sync` and reloads `anki-words.json`.
 
 ## Commands
@@ -77,6 +79,10 @@ the network code or the real Anki calls: say so rather than claiming those were 
   binary-searches it.
 
 ## Behaviour to preserve
+
+- The `add-row` worker must print exactly what an in-process run prints, with the same exit
+  status. It restarts by itself when the config file or a module changes, and stops after 15 idle
+  minutes. Logs: `~/.cache/german-anki/worker.log`.
 
 - `sync` runs every few seconds during playback. Keep its fast path cheap, and don't import
   `cards.py`, `verbformen.py` or `media.py` (Playwright, Pillow) from it.

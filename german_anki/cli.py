@@ -22,6 +22,9 @@ def build_parser():
     sub.add_parser("words", parents=[length], help="create cards for the words in the clipboard (default)")
     p = sub.add_parser("add-row", parents=[length], help="create/update the card for one to-do row (used by mpv)")
     p.add_argument("row")
+    p.add_argument("--no-worker", action="store_true",
+                   help="process the row in this process instead of the background worker")
+    sub.add_parser("serve", help="background worker that keeps the browser warm for add-row (started by add-row)")
     p = sub.add_parser("sentences", help="import sentence pairs (default file: <data>/sentence-mining.md)")
     p.add_argument("file", nargs="?", help="markdown table to import instead of the default file")
     p.add_argument("--skip-duplicates", action="store_true", help="skip pairs already in the deck")
@@ -55,6 +58,17 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.cmd == "serve":
+        from . import server
+        return server.serve()
+    if args.cmd == "add-row" and not args.no_worker:
+        if args.min_words and args.max_words and args.min_words > args.max_words:
+            parser.error(f"need 1 <= min words <= max words, got {args.min_words}-{args.max_words}")
+        from . import server
+        status = server.run_add_row({"row": args.row, "min_words": args.min_words, "max_words": args.max_words})
+        if status is not None:
+            return status
+        print("[!] background worker unavailable, processing the row here", file=sys.stderr)
     if args.cmd in (None, "words", "add-row", "regen"):
         if args.cmd == "regen" and args.words and args.query:
             parser.error("give words or --query, not both")
