@@ -153,14 +153,88 @@ def test_build_forms_noaudio_status_and_ranking():
     assert forms["lief"] == "ok"           # ok beats missing
 
 
-def test_sentence_row_parsing():
-    from danki.sentences import parse_row
+def test_legacy_markdown_rows():
+    from danki.legacy import parse_row
     row = r"| Die Sache wird ernst | things get serious | ![[die-sache-v1.webp\|500x379]] | ![[die-sache-v1.ogg]] |"
-    assert parse_row(row) == ("Die Sache wird ernst", "things get serious", "die-sache-v1.webp", "die-sache-v1.ogg")
-    assert parse_row(r"| Für immer | always | ![[x.webp\|500x379]] |") == ("Für immer", "always", "x.webp", None)
-    assert parse_row(r"| a \| b | c |  |  |") == ("a | b", "c", None, None)
-    assert parse_row("| Nur Deutsch |  |  |  |") is None     # English is required
-    assert parse_row("not a row") is None
+    assert parse_row(row, "sentence") == {"kind": "sentence", "text": "Die Sache wird ernst",
+                                          "meaning": "things get serious",
+                                          "image": "die-sache-v1.webp", "audio": "die-sache-v1.ogg"}
+    assert parse_row(r"| a \| b | c |  |  |", "sentence")["text"] == "a | b"
+    assert parse_row("| Nur Deutsch |  |  |  |", "sentence") is None     # English is required
+    assert parse_row(r"| glauben |  | ![[glauben-v1.webp\|500x379]] | ![[glauben-v1.ogg]] |", "word")["audio"] == "glauben-v1.ogg"
+    for junk in ("| German | English | Image | Audio |", "| ------ | ------- | ----- | ----- |", "not a row"):
+        assert parse_row(junk, "word") is None
+
+
+def _settings(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_text(f"DANKI_DATA_DIR={tmp_path}\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", f)
+    for k in config.DEFAULTS:
+        monkeypatch.delenv(k, raising=False)
+    return config.load()
+
+
+def test_legacy_migration_fills_the_queue_once(tmp_path, monkeypatch):
+    from danki import legacy, queue
+    s = _settings(tmp_path, monkeypatch)
+    (tmp_path / "To-do-german-words.md").write_text(
+        "| German | English | Image | Audio |\n| ------ | ------- | ----- | ----- |\n"
+        "| Haus | house | ![[haus-v1.webp\\|500x379]] | ![[haus-v1.ogg]] |\n", encoding="utf-8")
+    (tmp_path / "To-do-german-words-done.md").write_text("old log\n", encoding="utf-8")
+    assert legacy.migrate(s) == 1
+    [(path, entry)] = queue.pending(s)
+    assert (entry["kind"], entry["text"], entry["image"]) == ("word", "Haus", "haus-v1.webp")
+    assert not (tmp_path / "To-do-german-words.md").exists()
+    assert (s.legacy_dir / "To-do-german-words-done.md").exists()
+    assert legacy.migrate(s) == 0 and len(queue.pending(s)) == 1      # nothing left to move
+
+
+def test_queue_entries(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from danki import queue
+    s = _settings(tmp_path, monkeypatch)
+    path = queue.add(s, {"id": "1-2", "kind": "sentence", "text": " Bis bald ", "meaning": "see you",
+                         "image": "../../etc/x.webp", "audio": None})
+    entry = queue.load(path)
+    assert entry["text"] == "Bis bald" and entry["image"] == "x.webp"   # never a path out of assets/
+    with pytest.raises(queue.BadEntry):
+        queue.validate({"kind": "sentence", "text": "Hallo", "meaning": ""})
+    (s.queue_dir / "broken.json").write_text("{", encoding="utf-8")
+    assert [e["id"] for _, e in queue.pending(s)] == ["1-2"]            # the broken file is skipped
+    assert queue.referenced_assets(s) == {"x.webp"}
+
+    s.assets_dir.mkdir()
+    (s.assets_dir / "x.webp").write_bytes(b"img")
+    queue.finish(s, path, entry)
+    assert not path.exists() and not (s.assets_dir / "x.webp").exists()
+    json.loads(json.dumps(entry))
+
+
+def test_process_keeps_a_failed_capture(tmp_path, monkeypatch, capsys):
+    from danki import queue
+    s = _settings(tmp_path, monkeypatch)
+    path = queue.add(s, {"id": "1", "kind": "word", "text": "Haus"})
+    monkeypatch.setattr(queue, "_make_card", lambda e: (False, "Anki is closed", "failed"))
+    assert queue.process(path) == 1 and path.exists()
+    monkeypatch.setattr(queue, "_make_card", lambda e: (True, "card made", "added"))
+    assert queue.process(path) == 0 and not path.exists()
+    assert "STATUS: added\nRESULT: card made" in capsys.readouterr().out
+
+
+def test_clean_assets_keeps_queued_media(tmp_path, monkeypatch):
+    from danki import anki, queue
+    s = _settings(tmp_path, monkeypatch)
+    s.assets_dir.mkdir()
+    for name in ("keep.webp", "old-original.webp", "done.ogg"):
+        (s.assets_dir / name).write_bytes(b"x")
+    queue.add(s, {"id": "1", "kind": "word", "text": "Haus", "image": "keep.webp"})
+    monkeypatch.setattr(anki.Anki, "__call__", lambda self, action, **kw: ["done.ogg"])
+    queue.clean_assets(dry_run=True)
+    assert len(list(s.assets_dir.iterdir())) == 3
+    queue.clean_assets(assume_yes=True)
+    assert [p.name for p in s.assets_dir.iterdir()] == ["keep.webp"]
 
 
 def test_regen_selection_helpers():
@@ -328,19 +402,19 @@ def test_clipboard_run_continues_after_a_failure(monkeypatch):
 
 
 def test_worker_round_trip(tmp_path, monkeypatch):
-    """add-row's client against a real worker loop, with the card making stubbed out."""
+    """add-capture's client against a real worker loop, with the card making stubbed out."""
     import threading
-    from danki import cards, server
+    from danki import cards, queue, server
     sock = tmp_path / "w.sock"
     monkeypatch.setattr(server, "socket_path", lambda: sock)
     monkeypatch.setattr(server, "IDLE_SECONDS", 2)
     monkeypatch.setattr(server, "_start_worker", lambda: None)
     monkeypatch.setattr(cards.verbformen, "close", lambda: None)
 
-    def fake_row(row):
-        print(f"STATUS: added\nRESULT: card for {row}")
-        return 0 if row != "bad" else 1
-    monkeypatch.setattr(cards, "process_row", fake_row)
+    def fake_process(path):
+        print(f"STATUS: added\nRESULT: card for {path}")
+        return 0 if path != "bad" else 1
+    monkeypatch.setattr(queue, "process", fake_process)
     t = threading.Thread(target=server.serve, daemon=True)
     t.start()
     for _ in range(100):
@@ -351,8 +425,8 @@ def test_worker_round_trip(tmp_path, monkeypatch):
     import io, sys
     out = io.BytesIO()
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(out, encoding="utf-8"))
-    assert server.run_add_row({"row": "Haus"}) == 0
-    assert server.run_add_row({"row": "bad"}) == 1
+    assert server.run_capture({"path": "Haus"}) == 0
+    assert server.run_capture({"path": "bad"}) == 1
     sys.stdout.flush()
     text = out.getvalue().decode()
     assert "RESULT: card for Haus" in text and "RESULT: card for bad" in text
@@ -364,7 +438,7 @@ def test_worker_unavailable_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "socket_path", lambda: tmp_path / "none.sock")
     monkeypatch.setattr(server, "_start_worker", lambda: None)
     monkeypatch.setattr(server, "START_TIMEOUT", 0.1)
-    assert server.run_add_row({"row": "Haus"}) is None     # cli then processes the row itself
+    assert server.run_capture({"path": "Haus"}) is None     # cli then processes the capture itself
 
 
 def test_examples_merge_tatoeba_first_then_llm():
@@ -443,3 +517,13 @@ def test_whisper_paths_default_to_the_data_dir(tmp_path, monkeypatch):
     built.write_text("#!/bin/sh\n")
     built.chmod(0o755)
     assert s.whisper_cli == str(built)
+
+
+def test_sentence_lines_typed_by_hand():
+    from danki.sentences import parse_line
+    assert parse_line("Die Sache wird ernst - things get serious") == ("Die Sache wird ernst", "things get serious")
+    assert parse_line("  Für immer – always ") == ("Für immer", "always")            # en dash
+    assert parse_line("Na ja - well - sort of") == ("Na ja", "well - sort of")       # first dash splits
+    assert parse_line("E-Mail schreiben - write an e-mail") == ("E-Mail schreiben", "write an e-mail")
+    for bad in ("Nur Deutsch", "Hallo -", "- hello", ""):
+        assert parse_line(bad) is None

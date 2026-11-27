@@ -48,12 +48,20 @@ uses a `whisper-cli` already on your PATH instead of building one.
 |---|---|
 | `danki` | make cards for the words in the clipboard |
 | `danki regen` | regenerate the cards you tagged `regen` in Anki (see below) |
-| `danki sentences` | import sentence pairs from `sentence-mining.md` |
+| `danki sentences [FILE]` | add sentence cards from `<German> - <English>` lines in the clipboard (or FILE) |
+| `danki retry` | make the cards for captures that failed (`--list` shows them) |
+| `danki clean-assets` | delete captured screenshots/audio that no waiting capture needs |
 | `danki subs [FILE…]` | write `FILE.srt` with whisper.cpp; without files, pick them with fzf |
 | `danki sync` | refresh the word list used for subtitle colours |
 | `danki setup-anki` | create the missing decks and note type in Anki |
 | `danki doctor` | check the installation |
 | `danki paths` | show where config and data are stored |
+
+Every capture from mpv is saved as a small file in `~/.local/share/danki/queue/`, next to its
+screenshot and audio in `assets/`. Once its card is in Anki (which keeps its own copy of the
+media), danki deletes all three. A capture that fails, say because Anki was closed, stays queued
+until `danki retry`. Older versions kept the files of every capture; `danki clean-assets
+--dry-run` shows how much of that can go.
 
 Captures from mpv go through a background worker (`danki serve`, started on demand) that
 keeps the browser for conjugation tables open, so each capture skips 1–2 s of start-up. It stops
@@ -104,7 +112,7 @@ All settings (deck names, note type, hotkeys, colours) live in
 `~/.config/danki/.env`. See `.env.example` for every option.
 
 Example sentences are 10–25 words long by default (`EXAMPLE_MIN_WORDS`, `EXAMPLE_MAX_WORDS`).
-`danki words`, `add-row` and `regen` take `--min-words N` / `--max-words N` to change
+`danki words`, `add-capture` and `regen` take `--min-words N` / `--max-words N` to change
 that for one run.
 
 The note type (default `Basic with example`) needs the fields

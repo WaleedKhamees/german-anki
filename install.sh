@@ -7,7 +7,7 @@
 #     --dict-zip FILE      use a local dict-de-de.zip instead of downloading it
 #     --skip-browser       don't download Playwright's Chromium (conjugation tables)
 #     --skip-whisper       don't build whisper.cpp or download its models (`danki subs`)
-#     --migrate-from DIR   copy assets/, the to-do/done and sentence lists from an older setup
+#     --migrate-from DIR   copy assets/ and the queued captures from an older setup
 #     --config-dir DIR     keep the config (.env) in DIR and link ~/.config/danki
 #                          to it. Default: <dotfiles>/.config/danki when this repo lives
 #                          inside a dotfiles git repo that has a .config folder
@@ -318,12 +318,21 @@ if [[ -n "$MIGRATE_FROM" ]]; then
         cp -n "$MIGRATE_FROM/assets/"* "$DATA_DIR/assets/" 2>/dev/null || true
         info "assets: $(ls "$DATA_DIR/assets" | wc -l) files"
     fi
-    for f in To-do-german-words.md To-do-german-words-done.md sentence-mining.md sentence-mining-done.md; do
+    if [[ -d "$MIGRATE_FROM/queue" ]]; then
+        mkdir -p "$DATA_DIR/queue"
+        cp -n "$MIGRATE_FROM/queue/"*.json "$DATA_DIR/queue/" 2>/dev/null || true
+        info "queued captures: $(ls "$DATA_DIR/queue" | wc -l)"
+    fi
+    # pending rows of versions that kept the queue in Markdown (converted below)
+    for f in To-do-german-words.md sentence-mining.md; do
         if [[ ! -f "$MIGRATE_FROM/$f" ]]; then continue
-        elif [[ -f "$DATA_DIR/$f" ]]; then warn "$f already exists in $DATA_DIR — not overwritten"
+        elif [[ -e "$DATA_DIR/$f" || -e "$DATA_DIR/legacy/$f" ]]; then warn "$f was copied before — skipped"
         else cp "$MIGRATE_FROM/$f" "$DATA_DIR/$f"; info "copied $f"; fi
     done
 fi
+
+# older versions kept the capture queue in Markdown files: turn them into queue entries
+"$VENV/bin/python" -m danki.legacy
 
 # ---------------------------------------------------------------- 7. mpv scripts
 say "mpv scripts ($MPV_SCRIPTS_DIR)"

@@ -16,14 +16,17 @@ with whisper.cpp. The project used to be called german-anki; `install.sh` moves 
 | Path | Role |
 |---|---|
 | `danki/cli.py` | argparse entry point; heavy modules are imported lazily |
-| `danki/cards.py` | word cards: puts the parts below into a note; clipboard run, `add-row`, `regen` |
+| `danki/cards.py` | word cards: puts the parts below into a note; clipboard run, captured words, `regen` |
 | `danki/llm.py` | definition and examples from OpenRouter; the prompt and the per-word cache |
 | `danki/examples.py` | example length limits, Tatoeba lookup |
 | `danki/dwds.py` | article, verb/noun status and pronunciation from DWDS |
 | `danki/verbformen.py` | conjugation table screenshot; one shared browser per run |
-| `danki/server.py` | `serve`: background worker for `add-row` (warm imports and browser); `add-row` is its client |
+| `danki/server.py` | `serve`: background worker for `add-capture` (warm imports and browser); `add-capture` is its client |
 | `danki/media.py` | captured screenshot/audio from `<data>/assets` → Anki (words and sentences) |
-| `danki/sentences.py` | sentence cards (two notes per pair) |
+| `danki/sentences.py` | sentence cards (two notes per pair); `sentences`: `<German> - <English>` lines typed by hand |
+| `danki/queue.py` | captures waiting for Anki (`<data>/queue/<id>.json`); `add-capture`, `retry`, `clean-assets` |
+| `danki/legacy.py` | one-time conversion of the Markdown to-do files of older versions into the queue |
+| `danki/files.py` | `write_atomic`, for every file another process may read |
 | `danki/sync.py` | exports the deck to `anki-words.json` for the subtitle colours |
 | `danki/dictionary.py` | builds `dict.sqlite` and `wordlist.txt` from reader.dict |
 | `danki/normalize.py` | Word field → lookup key |
@@ -35,7 +38,8 @@ with whisper.cpp. The project used to be called german-anki; `install.sh` moves 
 | `mpv/danki-subs/main.lua` | subtitle colouring; `ignore.txt` lists words never coloured |
 | `install.sh`, `uninstall.sh`, `completions/` | setup, removal, bash completion |
 
-Data flow: mpv → row in `To-do-german-words.md` → `danki add-row` → (Unix socket → the
+Data flow: mpv → screenshot and audio in `<data>/assets`, capture in `<data>/queue/<id>.json` →
+`danki add-capture <file>` → (Unix socket → the
 `danki serve` worker, started on demand; in-process if that fails) → AnkiConnect. mpv then
 sends `danki-subs-refresh`, which runs `danki sync` and reloads `anki-words.json`.
 
@@ -56,8 +60,9 @@ the network code or the real Anki calls: say so rather than claiming those were 
 - **The install is live.** The venv is editable and `~/.config/mpv/scripts/` links to `mpv/`, so
   edits affect the user's running setup immediately.
 - **AnkiConnect is the user's real collection.** Reading is fine. Don't run `danki` with no
-  arguments (it makes cards from the clipboard), `words`, `add-row`, `add-sentence`, `sentences`,
-  `regen`, `backfill-tags` or `setup-anki` unless asked. `regen --dry-run`, `doctor` and `paths` are safe.
+  arguments (it makes cards from the clipboard), `words`, `sentences`, `add-capture`, `retry`, `clean-assets`,
+  `regen`, `backfill-tags` or `setup-anki` unless asked. `regen --dry-run`, `retry --list`,
+  `clean-assets --dry-run`, `doctor` and `paths` are safe.
 - `subs` is local and free, but slow and CPU-heavy; test it on a short clip. It skips existing
   `.srt` files unless `--overwrite` is given.
 - Captures and `regen` cost OpenRouter credit. Keep the verbformen rate limit.
@@ -76,7 +81,7 @@ the network code or the real Anki calls: say so rather than claiming those were 
   `conf_get` in both shell scripts.
 - **Note fields:** `REQUIRED_FIELDS` in `anki.py` ↔ README ↔ the templates in `anki_setup.py`
   (a test checks these). Use the constants, not literal names. `Word` must stay the first field.
-- **CLI output parsed by Lua:** `STATUS:` and `RESULT:` lines from `add-row`/`add-sentence`; output
+- **CLI output parsed by Lua:** `STATUS:` and `RESULT:` lines from `add-capture`; output
   starting with `unchanged` and exit codes 0/2/3 from `sync`.
 - **`anki-words.json`:** bump `FORMS_VERSION` when `build_forms` changes. Bump `DB_VERSION` in
   `dictionary.py` when the database layout changes.
@@ -85,7 +90,7 @@ the network code or the real Anki calls: say so rather than claiming those were 
 
 ## Behaviour to preserve
 
-- The `add-row` worker must print exactly what an in-process run prints, with the same exit
+- The `add-capture` worker must print exactly what an in-process run prints, with the same exit
   status. It restarts by itself when the config file or a module changes, and stops after 15 idle
   minutes. Logs: `~/.cache/danki/worker.log`.
 
@@ -95,7 +100,10 @@ the network code or the real Anki calls: say so rather than claiming those were 
   `SourceAudio`.
 - Articles and verb/noun status come from DWDS first. The LLM's article only chooses between
   DWDS entries.
-- A failed capture keeps its row in the to-do file; nothing captured may be lost.
+- A failed capture stays in the queue with its media; nothing captured may be lost. Only a
+  capture whose card is in Anki is deleted, with its two asset files. The capture script names
+  media `<slug>-<id>` and never reuses a name: storing a known name again overwrites that file
+  in Anki, under the card that already uses it.
 - `setup-anki` only adds what is missing, asks first, and never changes an existing note type or
   deck. Creating things before a first AnkiWeb sync can force an upload/download choice.
 - Re-running `install.sh` never overwrites config or data. `uninstall.sh --purge` never deletes
@@ -106,7 +114,7 @@ the network code or the real Anki calls: say so rather than claiming those were 
 ## Style
 
 - Python 3.10+, standard library where practical; explicit `encoding="utf-8"` for files; write
-  shared files atomically (`_write_atomic`).
+  shared files atomically (`files.write_atomic`).
 - Lua must run in mpv (LuaJIT / Lua 5.1–5.2). `lower()` handles umlauts because `string.lower`
   doesn't.
 - Comments explain why, briefly. Documentation is in plain English.

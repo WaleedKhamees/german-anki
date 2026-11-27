@@ -33,7 +33,7 @@ if [[ -d "$DATA_DIR/venv" ]]; then rm -rf "$DATA_DIR/venv"; echo "removed $DATA_
 
 if [[ $PURGE -eq 1 ]]; then
     echo
-    echo "This deletes your settings and ALL captured data (to-do/done lists, screenshots, audio):"
+    echo "This deletes your settings and ALL captured data (queued captures, screenshots, audio):"
     echo "  $(dirname "$CONFIG_FILE")"
     echo "  $DATA_DIR"
     read -r -p "Type 'delete' to confirm: " answer

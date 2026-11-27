@@ -12,15 +12,12 @@
 --               (marked words show their number). Nothing marked: the whole line.
 --   2. Edit   : fix the sentence, Enter.
 --   3. English: the translation (required), Enter saves.
---   The row (German | English | screenshot | audio) goes to SENTENCE_FILE and is sent to
---   `danki add-sentence`; a new card moves it to SENTENCE_DONE_FILE.
 --
--- On save a row is appended to MARKDOWN_FILE with:
---   word | meaning | screenshot (with subtitles) | audio clip of the subtitle line
--- The audio is cut with ffmpeg in the background from the active audio track.
--- The row is then sent to `danki add-row` in the background. A new card moves the
--- row to DONE_FILE; a word already in Anki (media filled in / already complete) just
--- removes it from MARKDOWN_FILE; on failure it stays in MARKDOWN_FILE.
+-- On save the screenshot (with subtitles) and an audio clip of the subtitle line (cut with
+-- ffmpeg from the active audio track) go to ASSET_DIR, and the capture is queued as
+-- QUEUE_DIR/<id>.json (see danki/queue.py for the format). `danki add-capture` then makes the
+-- card in the background; once it is in Anki, danki deletes the queue file and the two asset
+-- files. A failed capture stays queued for `danki retry`.
 
 local mp    = require("mp")
 local msg   = require("mp.msg")
@@ -65,20 +62,14 @@ end
 local conf = config_reader()
 
 local BASE_DIR      = conf.str("DANKI_DATA_DIR", "~/.local/share/danki")
-local MARKDOWN_FILE = BASE_DIR .. "/To-do-german-words.md"
 local ASSET_DIR     = BASE_DIR .. "/assets"
-local DONE_FILE     = BASE_DIR .. "/To-do-german-words-done.md"
-local SENTENCE_FILE      = BASE_DIR .. "/sentence-mining.md"
-local SENTENCE_DONE_FILE = BASE_DIR .. "/sentence-mining-done.md"
+local QUEUE_DIR     = BASE_DIR .. "/queue"
 
--- Every saved row is sent to `danki add-row` (one at a time, in the background). A new
--- card moves the row from MARKDOWN_FILE to DONE_FILE; a word that was already in Anki (missing
--- media filled in, or already complete) is only removed from MARKDOWN_FILE; when it fails the
--- row stays in MARKDOWN_FILE. CAPTURE_AUTO_ADD=no disables this.
+-- Every capture is sent to `danki add-capture` (one at a time, in the background).
+-- CAPTURE_AUTO_ADD=no only queues it (`danki retry` makes the cards later).
 local DANKI = conf.bool("CAPTURE_AUTO_ADD", true)
             and conf.str("DANKI_BIN", "~/.local/bin/danki") or nil
 
-local IMAGE_SIZE    = conf.str("CAPTURE_IMAGE_SIZE", "500x379")   -- Obsidian embed size hint
 local HOTKEY        = conf.str("CAPTURE_HOTKEY", "ctrl+w")
 local SENTENCE_HOTKEY = conf.str("SENTENCE_HOTKEY", "ctrl+e")
 local SENTENCE_SLUG_WORDS = 4     -- media files are named after the first words of the sentence
@@ -155,10 +146,6 @@ local function lower(s)
     return (tostring(s):lower():gsub("Ä", "ä"):gsub("Ö", "ö"):gsub("Ü", "ü"))
 end
 
-local function markdown_cell(text)
-    return (tostring(text or ""):gsub("|", "\\|"):gsub("\r?\n", " "))
-end
-
 -- "Störung" -> "störung", "wachsen (sein)" -> "wachsen-sein" (same rule as rename_media.py)
 local function word_slug(word)
     local lower_map = { ["Ä"] = "ä", ["Ö"] = "ö", ["Ü"] = "ü", ["ẞ"] = "ß" }
@@ -175,25 +162,11 @@ local function word_slug(word)
     return s ~= "" and s or "word"
 end
 
--- First <slug>-v<N> with no existing screenshot/audio file in ASSET_DIR.
-local function next_versioned_name(word)
-    local base = word_slug(word)
-    local n = 1
-    while true do
-        local name = string.format("%s-v%d", base, n)
-        local used = false
-        for _, ext in ipairs({ "webp", "png", "jpg", "ogg", "opus", "mp3" }) do
-            if utils.file_info(ASSET_DIR .. "/" .. name .. "." .. ext) then used = true; break end
-        end
-        if not used then return name end
-        n = n + 1
-    end
-end
-
 local function make_id()
     capture_counter = (capture_counter + 1) % 1000
     local ms = math.floor((mp.get_time() % 1) * 1000)
-    return string.format("%d%03d%03d", os.time(), ms, capture_counter)
+    -- starts with the time, so the queue sorts oldest first; the pid separates mpv windows
+    return string.format("%d%03d%03d-%d", os.time(), ms, capture_counter, utils.getpid())
 end
 
 local PUNCT = "[%.,!?;:%(%)%[%]%{%}\"'„“”‚‘’«»…]"
@@ -209,22 +182,24 @@ local function file_exists(path)
 end
 
 local function ensure_dirs()
-    local r = utils.subprocess({ args = { "mkdir", "-p", ASSET_DIR }, cancellable = false })
+    local r = utils.subprocess({ args = { "mkdir", "-p", ASSET_DIR, QUEUE_DIR }, cancellable = false })
     return r.status == 0
 end
 
-local function append_markdown(row, file)
-    file = file or MARKDOWN_FILE
-    local new_file = not file_exists(file)
-    local f, err = io.open(file, "a")
-    if not f then return false, tostring(err) end
-    if new_file then
-        f:write("| German | English | Image | Audio |\n")
-        f:write("| ------ | ------- | ----- | ----- |\n")
-    end
-    f:write(row)
+-- write the capture to QUEUE_DIR/<id>.json; -> path, or nil and the error
+local function write_queue_entry(entry)
+    local json, jerr = utils.format_json(entry)
+    if not json then return nil, tostring(jerr) end
+    local path = QUEUE_DIR .. "/" .. entry.id .. ".json"
+    local tmp = path .. ".tmp"
+    local f, err = io.open(tmp, "w")
+    if not f then return nil, tostring(err) end
+    local ok, werr = f:write(json, "\n")
     f:close()
-    return true
+    if not ok then os.remove(tmp); return nil, tostring(werr) end
+    local renamed, rerr = os.rename(tmp, path)   -- readers never see half a file
+    if not renamed then os.remove(tmp); return nil, tostring(rerr) end
+    return path
 end
 
 -- ============================================================
@@ -578,37 +553,7 @@ end
 -- SAVE
 -- ============================================================
 
--- ------------------------------------------------------------ Anki queue (danki add-row)
-
--- remove the first line equal to `row` from `file`; append it to `done_file` if to_done
-local function move_row_to_done(row, to_done, file, done_file)
-    file, done_file = file or MARKDOWN_FILE, done_file or DONE_FILE
-    local f = io.open(file, "r")
-    if not f then return false, "cannot read " .. file end
-    local lines, removed = {}, false
-    for line in f:lines() do
-        if not removed and line == row then removed = true else lines[#lines + 1] = line end
-    end
-    f:close()
-    if not removed then return false, "row not found in to-do file" end
-
-    if to_done then
-        local done_new = not file_exists(done_file)
-        local d, err = io.open(done_file, "a")
-        if not d then return false, tostring(err) end
-        if done_new then
-            d:write("| German | English | Image | Audio |\n| ------ | ------- | ----- | ----- |\n")
-        end
-        d:write(row .. "\n")
-        d:close()
-    end
-
-    local w, err2 = io.open(file, "w")
-    if not w then return false, tostring(err2) end
-    w:write(table.concat(lines, "\n") .. "\n")
-    w:close()
-    return true
-end
+-- ------------------------------------------------------------ Anki queue (danki add-capture)
 
 local anki_queue, anki_busy = {}, false
 
@@ -617,40 +562,29 @@ local function run_anki_queue()
     anki_busy = true
     local job = table.remove(anki_queue, 1)
     mp.command_native_async({
-        name = "subprocess", args = { DANKI, job.cmd, job.row },
+        name = "subprocess", args = { DANKI, "add-capture", job.path },
         playback_only = false, capture_stdout = true, capture_stderr = true,
     }, function(success, res)
         local out = res and res.stdout or ""
         local result = trim(out:match("RESULT: ([^\n]*)") or "")
         if success and res.status == 0 then
-            -- only brand-new cards are logged in the done file; words that were already in
-            -- Anki (media filled in, or already complete) just leave the to-do file
-            local kind = trim(out:match("STATUS: ([^\n]*)") or "added")
-            local moved, err = move_row_to_done(job.row, kind == "added", job.file, job.done_file)
-            if moved then
-                show_toast({ tag(C.ok, "Anki ✓ ") .. ass_escape(result) }, 3)
-            else
-                show_toast({ tag(C.ok, "Anki ✓ ") .. ass_escape(result),
-                             tag(C.err, "row not moved to done file: " .. ass_escape(err)) }, 6)
-            end
+            show_toast({ tag(C.ok, "Anki ✓ ") .. ass_escape(result) }, 3)
             mp.commandv("script-message", "danki-subs-refresh")
         else
             local why = result ~= "" and result
                 or trim(res and (res.stderr ~= "" and res.stderr or res.error_string) or "?"):sub(-200)
-            msg.error("danki " .. job.cmd .. " failed for " .. job.word .. ": " .. tostring(res and res.stderr))
+            msg.error("danki add-capture failed for " .. job.word .. ": " .. tostring(res and res.stderr))
             show_toast({ tag(C.err, "Anki ✗ ") .. "{\\b1}" .. ass_escape(job.word) .. "{\\b0}",
-                         tag(C.dim, ass_escape(why)), tag(C.faint, "row kept in the to-do file") }, 7)
+                         tag(C.dim, ass_escape(why)), tag(C.faint, "kept in the queue — danki retry") }, 7)
         end
         anki_busy = false
         run_anki_queue()
     end)
 end
 
-local function queue_for_anki(row, word, sentence_mode)
+local function queue_for_anki(path, word)
     if not DANKI then return end
-    anki_queue[#anki_queue + 1] = sentence_mode
-        and { row = row, word = word, cmd = "add-sentence", file = SENTENCE_FILE, done_file = SENTENCE_DONE_FILE }
-        or { row = row, word = word, cmd = "add-row", file = MARKDOWN_FILE, done_file = DONE_FILE }
+    anki_queue[#anki_queue + 1] = { path = path, word = word }
     run_anki_queue()
 end
 
@@ -702,7 +636,9 @@ local function execute_save(meaning)
         end
         slug_src = table.concat(first, " ")
     end
-    local name = next_versioned_name(slug_src)
+    -- unique, so a name is never reused: Anki would overwrite another card's media
+    local id = make_id()
+    local name = word_slug(slug_src) .. "-" .. id
     local image_name = name .. ".webp"
     local audio_name = name .. ".ogg"
     local image_path = ASSET_DIR .. "/" .. image_name
@@ -713,20 +649,16 @@ local function execute_save(meaning)
     resume_playback()
 
     local function finish(audio_ok, audio_err)
-        local image_ref = ""
-        if shot_ok then
-            image_ref = (IMAGE_SIZE ~= "") and string.format("![[%s\\|%s]]", image_name, IMAGE_SIZE)
-                or string.format("![[%s]]", image_name)
-        end
-        local audio_ref = audio_ok and string.format("![[%s]]", audio_name) or ""
-        local row = string.format("| %s | %s | %s | %s |\n",
-            markdown_cell(german), markdown_cell(meaning), image_ref, audio_ref)
-        local ok, err = append_markdown(row, sentence_mode and SENTENCE_FILE or MARKDOWN_FILE)
-        if not ok then
-            show_toast({ tag(C.err, "✗ Could not write markdown"), tag(C.dim, ass_escape(err)) }, 7)
+        local path, err = write_queue_entry({
+            id = id, kind = sentence_mode and "sentence" or "word", text = german, meaning = meaning,
+            image = shot_ok and image_name or nil, audio = audio_ok and audio_name or nil,
+            captured = os.time(),
+        })
+        if not path then
+            show_toast({ tag(C.err, "✗ Could not queue the capture"), tag(C.dim, ass_escape(err)) }, 7)
             return
         end
-        queue_for_anki((row:gsub("\n$", "")), german, sentence_mode)
+        queue_for_anki(path, german)
         show_toast({
             tag(C.ok, "✓ ") .. "{\\b1}" .. ass_escape(german) .. "{\\b0}",
             (shot_ok and tag(C.ok, "screenshot ✓") or tag(C.err, "screenshot ✗")) .. tag(C.faint, "  •  ") ..

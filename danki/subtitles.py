@@ -13,7 +13,6 @@ until a clean pause resyncs it.
 """
 import difflib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -22,6 +21,7 @@ import tempfile
 import wave
 from pathlib import Path
 
+from .files import write_atomic
 from . import config
 
 MEDIA_SUFFIXES = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v",
@@ -191,12 +191,6 @@ def fill_gaps(wav_path, cues, lang, whisper, model, threads, tmp):
 
 # --- running it ---
 
-def _write_atomic(path, text):
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _run(cmd, what):
     res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                          errors="replace")
@@ -238,7 +232,7 @@ def make_subtitles(media, s, lang, whisper, model):
             added = fill_gaps(wav, cues, lang, whisper, model, threads, tmp)
             print(f"    recovered {len(added)} line(s) from the gaps", file=sys.stderr)
             cues += added
-        _write_atomic(target, format_srt(cues))
+        write_atomic(target, format_srt(cues))
     return len(cues)
 
 

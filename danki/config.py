@@ -80,13 +80,9 @@ class Settings:
     @property
     def assets_dir(self): return self.data_dir / "assets"
     @property
-    def todo_file(self): return self.data_dir / "To-do-german-words.md"
+    def queue_dir(self): return self.data_dir / "queue"     # captures waiting for Anki (queue.py)
     @property
-    def done_file(self): return self.data_dir / "To-do-german-words-done.md"
-    @property
-    def sentences_file(self): return self.data_dir / "sentence-mining.md"
-    @property
-    def sentences_done_file(self): return self.data_dir / "sentence-mining-done.md"
+    def legacy_dir(self): return self.data_dir / "legacy"   # Markdown files of older versions
     @property
     def words_json(self): return self.data_dir / "anki-words.json"
     @property

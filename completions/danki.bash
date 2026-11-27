@@ -6,7 +6,7 @@ _danki() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="words add-row serve regen sentences add-sentence subs sync backfill-tags list-words setup-dict setup-anki doctor paths"
+    local commands="words add-capture serve regen sentences retry clean-assets subs sync backfill-tags list-words setup-dict setup-anki doctor paths"
     local parts="definition examples conjugation pronunciation"
 
     # the subcommand is the first word that is not an option
@@ -47,10 +47,16 @@ _danki() {
             ;;
         sentences)
             if [[ $cur == -* ]]; then
-                COMPREPLY=($(compgen -W "--skip-duplicates -h --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-h --help" -- "$cur"))
             else
-                _filedir md
+                _filedir
             fi
+            ;;
+        retry)
+            COMPREPLY=($(compgen -W "--list -h --help" -- "$cur"))
+            ;;
+        clean-assets)
+            COMPREPLY=($(compgen -W "--dry-run -y --yes -h --help" -- "$cur"))
             ;;
         subs)
             case $prev in
@@ -66,9 +72,13 @@ _danki() {
             [[ $prev == --min-words || $prev == --max-words ]] && return
             COMPREPLY=($(compgen -W "--min-words --max-words -h --help" -- "$cur"))
             ;;
-        add-row)
+        add-capture)
             [[ $prev == --min-words || $prev == --max-words ]] && return
-            COMPREPLY=($(compgen -W "--min-words --max-words --no-worker -h --help" -- "$cur"))
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--min-words --max-words --no-worker -h --help" -- "$cur"))
+            else
+                _filedir json
+            fi
             ;;
         setup-anki)
             COMPREPLY=($(compgen -W "-y --yes -h --help" -- "$cur"))

@@ -1,16 +1,10 @@
-"""`danki sentences`: import sentence pairs from a markdown table into the sentence deck.
-`danki add-sentence ROW`: add one row (what the mpv sentence capture, Ctrl+E, runs).
-
-The file (default <data>/sentence-mining.md) looks like:
-    | German | English | image | audio |
-    | ------ | ------- | ----- | ----- |
-    | Die Sache wird langsam ernst | things are about to get serious | ![[die-sache-v1.webp\\|500x379]] | ![[die-sache-v1.ogg]] |
-Every row becomes two notes (German-front and English-front) in ANKI_SENTENCE_DECK,
-tagged `sentence-mining`; image and audio are optional and are taken from <data>/assets.
+"""Sentence cards: a German sentence and its English translation become two notes (German-front
+and English-front) in ANKI_SENTENCE_DECK, tagged `sentence-mining`. They come from the mpv
+sentence capture (Ctrl+E; `queue.process` calls add_capture) or from `danki sentences`, which
+reads '<German> - <English>' lines typed by hand. Image and audio are optional and come from
+<data>/assets.
 """
 import re
-import sys
-import urllib.parse
 from pathlib import Path
 
 from . import config, media
@@ -20,51 +14,6 @@ from .anki import Anki, WORD, DEFINITION, SCREENSHOT, SOURCE_AUDIO
 TAG = "sentence-mining"
 
 
-def _media_name(cell):
-    """'![[x.webp\\|500x379]]' / '![[x.ogg]]' / 'x.webp' -> 'x.webp'; '' -> None."""
-    if not cell:
-        return None
-    m = re.search(r"!\[\[\s*([^\]|\\]+)", cell)
-    return Path(urllib.parse.unquote(m.group(1).strip())).name if m else cell
-
-
-def split_row(line):
-    """Cells of one markdown table row, honouring '\\|' inside a cell (Obsidian size hints)."""
-    cells = re.split(r"(?<!\\)\|", line.strip().strip("|"))
-    return [c.strip() for c in cells]
-
-
-def parse_row(line):
-    """One table row -> (german, english, image, audio), or None if it isn't a usable row."""
-    line = line.strip()
-    if not line.startswith("|") or not line.endswith("|"):
-        return None
-    columns = split_row(line)
-    if len(columns) < 2 or not columns[0] or not columns[1]:
-        return None
-    german, english = columns[0].replace("\\|", "|"), columns[1].replace("\\|", "|")
-    image = _media_name(columns[2]) if len(columns) >= 3 else None
-    audio = _media_name(columns[3]) if len(columns) >= 4 else None
-    return german, english, image, audio
-
-
-def parse_file(path):
-    rows = []
-    lines = [raw.strip() for raw in Path(path).read_text(encoding="utf-8").splitlines() if raw.strip()]
-    if len(lines) < 3:
-        print("File must have at least a header, separator, and one data row.", file=sys.stderr)
-        return rows
-
-    # Skip header (index 0) and separator (index 1)
-    for lineno, line in enumerate(lines[2:], start=3):
-        row = parse_row(line)
-        if not row:
-            print(f"Skipping line {lineno}: not a row with German and English: {line!r}", file=sys.stderr)
-            continue
-        rows.append(row)
-    return rows
-
-
 def _search_text(text):
     """Escape a value for an Anki search inside double quotes."""
     return re.sub(r'([\\"*_:])', r"\\\1", text)
@@ -72,16 +21,6 @@ def _search_text(text):
 
 def exists(anki, deck, text):
     return bool(anki("findNotes", query=f'"deck:{deck}" "{WORD}:{_search_text(text)}"'))
-
-
-def deduplicate(anki, deck, rows):
-    keep = []
-    for row in rows:
-        if exists(anki, deck, row[0]) or exists(anki, deck, row[1]):
-            print(f"Duplicate, skipping: {row[0]}")
-        else:
-            keep.append(row)
-    return keep
 
 
 def add_note(anki, settings, front, back, screenshot="", audio=""):
@@ -106,52 +45,65 @@ def add_pair(anki, settings, german, english, image=None, audio=None):
     return image_filename, audio_filename
 
 
-def add_row(row):
-    """One row from the mpv sentence capture. Prints STATUS/RESULT for the Lua script.
-    Exit 0 = the row is done (added, or already in the deck)."""
-    parsed = parse_row(row)
-    if not parsed:
-        print("STATUS: failed")
-        print("RESULT: could not parse row (needs German and English)")
-        return 1
-    german, english, image, audio = parsed
+def add_capture(german, english, image=None, audio=None):
+    """-> (ok, message, kind) with kind = added | duplicate | failed."""
     try:
         settings = config.load()
         anki = Anki(settings.anki_url)
         if exists(anki, settings.sentence_deck, german):
-            print("STATUS: duplicate")
-            print(f"RESULT: already in the deck: {german}")
-            return 0
+            return True, f"already in the deck: {german}", "duplicate"
         image_filename, audio_filename = add_pair(anki, settings, german, english, image, audio)
     except Exception as e:   # e.g. AnkiConnect down
         notify("Sentence Mining failed", f"{german}\n{e}", is_error=True)
-        print("STATUS: failed")
-        print(f"RESULT: {e}")
-        return 1
+        return False, str(e), "failed"
     missing = [name for name, got in (("screenshot", image_filename), ("audio", audio_filename)) if not got]
-    print("STATUS: added")
-    print(f"RESULT: sentence added" + (f" (no {', '.join(missing)})" if missing else ""))
-    return 0
+    return True, "sentence added" + (f" (no {', '.join(missing)})" if missing else ""), "added"
 
 
-def run(file=None, skip_duplicates=False):
-    settings = config.load()
-    anki = Anki(settings.anki_url)
-    path = Path(file) if file else settings.sentences_file
+# --- `danki sentences`: pairs typed by hand ---
 
-    rows = parse_file(path)
-    if not rows:
-        print(f"No valid sentences found in {path}.")
+SEPARATOR = re.compile(r"\s+[-–—]\s+")   # "German - English"; en/em dashes count too
+
+
+def parse_line(line):
+    """'<German> - <English>' -> (german, english); None if a side is missing. The first
+    spaced dash splits, so the English side may contain dashes of its own."""
+    parts = SEPARATOR.split(line.strip(), maxsplit=1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        return None
+    return parts[0].strip(), parts[1].strip()
+
+
+def run(file=None):
+    """Add every '<German> - <English>' line of FILE (default: the clipboard) as two notes.
+    Sentences already in the deck are skipped."""
+    if file:
+        text = Path(file).read_text(encoding="utf-8")
+    else:
+        import pyperclip
+        text = pyperclip.paste()
+    pairs, bad = [], []
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.strip():
+            pair = parse_line(line)
+            (pairs.append(pair) if pair else bad.append((n, line.strip())))
+    for n, line in bad:
+        print(f"[!] line {n} skipped, not '<German> - <English>': {line}")
+    if not pairs:
+        print("no '<German> - <English>' lines found" + ("" if file else " in the clipboard"))
         return 1
-    if skip_duplicates:
-        rows = deduplicate(anki, settings.sentence_deck, rows)
 
-    total = len(rows)
-    for i, (german, english, image, audio) in enumerate(rows, start=1):
-        add_pair(anki, settings, german, english, image, audio)
-        print(f"[{i}/{total}] {german} | {english}")
-
-    message = f"Added {total * 2} notes ({total} pairs) to '{settings.sentence_deck}'."
-    print(message)
-    notify("Sentence Mining Done", message)
-    return 0
+    added = duplicates = failed = 0
+    for i, (german, english) in enumerate(pairs, 1):
+        ok, message, kind = add_capture(german, english)
+        print(f"[{i}/{len(pairs)}] {german} | {english}: {message}")
+        if kind == "added":
+            added += 1
+        elif kind == "duplicate":
+            duplicates += 1
+        else:
+            failed += 1
+    summary = f"{added} added, {duplicates} already in the deck" + (f", {failed} failed" if failed else "")
+    print(summary)
+    notify("Sentence Mining done" if not failed else "Sentence Mining: some failed", summary, is_error=bool(failed))
+    return 1 if failed or bad else 0

@@ -16,21 +16,15 @@ Exit status: 0 ok, 3 Anki offline (previous export kept), 2 Anki offline and no 
 """
 import collections
 import json
-import os
 import sys
 import time
 
+from .files import write_atomic
 from . import dictionary
 from .anki import Anki, AnkiError, WORD, SCREENSHOT, SOURCE_AUDIO
 from .normalize import normalize, strip_html
 
 FULL_REFRESH_AFTER = 20 * 3600   # seconds; must stay below the 1 day of "edited:1"
-
-
-def _write_atomic(path, text):
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def _load_previous(path):
@@ -228,7 +222,7 @@ def run(settings):
     if unchanged and not full:
         if _str_keys(mods) != (prev.get("mods") or {}):
             prev["mods"] = _str_keys(mods)   # remember new modification times only
-            _write_atomic(out_json, json.dumps(prev, ensure_ascii=False, separators=(",", ":")))
+            write_atomic(out_json, json.dumps(prev, ensure_ascii=False, separators=(",", ":")))
         print(f"unchanged ({len(words)} Anki words, {time.time() - t0:.2f}s)")
         return 0
 
@@ -242,7 +236,7 @@ def run(settings):
         forms_of = {**lemma_forms, **forms_of}
     forms = build_forms(words, forms_of, expand)
 
-    _write_atomic(out_json, json.dumps({
+    write_atomic(out_json, json.dumps({
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "synced_at": time.time(),
         "forms_version": FORMS_VERSION,
@@ -253,7 +247,7 @@ def run(settings):
         "mods": _str_keys(mods),
         "forms": forms,
     }, ensure_ascii=False, separators=(",", ":")))
-    _write_atomic(settings.review_file, build_review(settings.deck, note_words, other_notes, heads, lemmas_of))
+    write_atomic(settings.review_file, build_review(settings.deck, note_words, other_notes, heads, lemmas_of))
 
     n_missing = sum(1 for w in words.values() if not (w["screenshot"] and w["audio"]))
     print(f"updated: {len(words)} Anki words ({n_missing} missing media) -> {len(forms)} forms "

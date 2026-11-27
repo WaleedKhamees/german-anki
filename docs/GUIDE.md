@@ -201,6 +201,19 @@ danki subs film.mkv         # or name it; writes film.srt next to it
 mpv shows `film.srt` by itself. It runs on your computer and takes a while; the first time you
 can try it on a short video.
 
+## Add sentences by hand
+
+Write one pair per line, German first, then ` - ` and the English:
+
+```
+Die Sache wird langsam ernst - things are about to get serious
+Für immer und ewig - always and forever
+```
+
+Copy the lines and run `danki sentences` (or save them in a file and run
+`danki sentences FILE`). Each line becomes two cards in the sentence deck; sentences that are
+already there are skipped.
+
 ## Make cards without a video
 
 Copy one or more words (one per line) and run `danki`. It makes a card for **every line
@@ -223,17 +236,13 @@ in your clipboard straight away**, so check what you copied first.
 | `danki subs`: "whisper-cli not found" | Run `./install.sh` again and read its whisper.cpp step; it needs `git`, `cmake` and a C++ compiler. |
 | A card has no table or pronunciation | Not every word has one. If it was a connection problem, try `danki regen WORD`. |
 
-**You saw "Anki ✗ … row kept in the to-do file".** Nothing is lost. Often Anki was simply closed:
+**You saw "Anki ✗ … kept in the queue".** Nothing is lost. Often Anki was simply closed. Open
+Anki, then run:
 
-1. Open Anki.
-2. Open `~/.local/share/danki/To-do-german-words.md`.
-3. Copy **only the rows with your words, not the first two lines** (the table heading would become
-   cards as well).
-4. Run `danki`.
-5. When it's done, delete those rows from the file.
-
-For sentences, run `danki sentences --skip-duplicates`, then delete the imported rows from
-`sentence-mining.md` in the same folder.
+```sh
+danki retry --list    # what is waiting
+danki retry           # make the cards
+```
 
 ## Update or remove
 

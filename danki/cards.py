@@ -1,7 +1,7 @@
 """Word cards: puts the definition and examples (llm, examples), the conjugation table
 (verbformen), the article and pronunciation (dwds) and the captured screenshot/audio (media)
-together into Anki notes. Used by `danki words` (clipboard), `danki add-row` (called by
-the mpv capture script for every captured word) and `danki regen`."""
+together into Anki notes. Used by `danki words` (clipboard), `danki add-capture` (called by
+the mpv capture script for every captured word, see queue.py) and `danki regen`."""
 import base64
 import concurrent.futures
 import html
@@ -9,8 +9,6 @@ import json
 import os
 import re
 import time
-import urllib.parse
-from pathlib import Path
 
 from . import config, dwds, examples, llm, media, verbformen
 from .anki import (Anki, MEDIA_TAGS, NO_PRONUNCIATION_TAG, WORD, DEFINITION, CONJUGATION,
@@ -23,7 +21,6 @@ SETTINGS = config.load()
 DECK_NAME = SETTINGS.deck
 MODEL_NAME = SETTINGS.note_type
 ASSET_DIR = SETTINGS.assets_dir  # where the mpv capture script saves screenshots/audio
-AUDIO_EXTS = {".mp3", ".m4a", ".ogg", ".opus", ".wav", ".flac", ".aac"}
 WORD_DELAY = 3  # seconds; retry backoff base (attempt n waits n * WORD_DELAY)
 MAX_RETRIES = 3
 
@@ -88,30 +85,9 @@ def backfill_media_tags():
 
 
 def parse_single_line(line):
-    cleaned = line.strip()
-    if not cleaned:
-        return None
-
-    custom_image = None
-    custom_audio = None
-    word = cleaned
-
-    for raw_filename in re.findall(r'!\[\[\s*([^\]|\\]+)', cleaned):
-        name = Path(urllib.parse.unquote(raw_filename.strip())).name
-        if Path(name).suffix.lower() in AUDIO_EXTS:
-            custom_audio = custom_audio or name
-        else:
-            custom_image = custom_image or name
-
-    if cleaned.startswith("|"):
-        columns = [c.strip() for c in cleaned.strip("|").split("|")]
-        if columns:
-            word = columns[0].strip()
-
-    if not word:
-        return None
-
-    return (word, custom_image, custom_audio)
+    """One clipboard line -> (word, None, None); None for a blank line."""
+    word = line.strip()
+    return (word, None, None) if word else None
 
 
 def parse_clipboard_input(raw_text):
@@ -338,22 +314,15 @@ def process_with_retries(word, custom_image=None, custom_audio=None, notify_succ
     return False, last_error, "failed"
 
 
-def process_row(row):
-    """Single markdown row from the mpv capture script. Exit status 0 = row is done."""
-    parsed = parse_single_line(row)
-    if not parsed:
-        print("RESULT: could not parse row")
-        return 1
-    word, custom_image, custom_audio = parsed
+def process_capture(word, custom_image=None, custom_audio=None):
+    """One word captured in mpv (queue.process). -> (ok, message, kind)"""
     try:
         ok, message, kind = process_with_retries(word, custom_image, custom_audio)
     except Exception as e:   # e.g. AnkiConnect down
         ok, message, kind = False, str(e), "failed"
     if not ok:
         notify(f"Anki Auto: '{word}' failed", message, is_error=True)
-    print(f"STATUS: {kind}")   # read by danki-capture.lua: only 'added' goes to the done file
-    print(f"RESULT: {message}")
-    return 0 if ok else 1
+    return ok, message, kind
 
 
 def run_clipboard():

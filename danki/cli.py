@@ -1,6 +1,7 @@
 """danki command line. Heavy modules are imported lazily so `sync` stays fast."""
 import argparse
 import sys
+from pathlib import Path
 
 
 def _positive_int(value):
@@ -20,16 +21,20 @@ def build_parser():
     length.add_argument("--max-words", type=_positive_int, metavar="N",
                         help="longest example sentence, in words (default: EXAMPLE_MAX_WORDS in .env)")
     sub.add_parser("words", parents=[length], help="create cards for the words in the clipboard (default)")
-    p = sub.add_parser("add-row", parents=[length], help="create/update the card for one to-do row (used by mpv)")
-    p.add_argument("row")
+    p = sub.add_parser("add-capture", parents=[length],
+                       help="make the card for one queued capture, <data>/queue/ID.json (used by mpv)")
+    p.add_argument("file")
     p.add_argument("--no-worker", action="store_true",
-                   help="process the row in this process instead of the background worker")
-    sub.add_parser("serve", help="background worker that keeps the browser warm for add-row (started by add-row)")
-    p = sub.add_parser("sentences", help="import sentence pairs (default file: <data>/sentence-mining.md)")
-    p.add_argument("file", nargs="?", help="markdown table to import instead of the default file")
-    p.add_argument("--skip-duplicates", action="store_true", help="skip pairs already in the deck")
-    p = sub.add_parser("add-sentence", help="add one sentence row to the sentence deck (used by mpv)")
-    p.add_argument("row")
+                   help="process the capture in this process instead of the background worker")
+    sub.add_parser("serve", help="background worker that keeps the browser warm for add-capture (started by it)")
+    p = sub.add_parser("sentences", help="add sentence pairs, one '<German> - <English>' per line, "
+                                         "from the clipboard (or FILE)")
+    p.add_argument("file", nargs="?", help="read the lines from this file instead of the clipboard")
+    p = sub.add_parser("retry", help="make the cards for the captures still queued (after a failure)")
+    p.add_argument("--list", action="store_true", help="only list the queued captures")
+    p = sub.add_parser("clean-assets", help="delete captured screenshots/audio that no queued capture needs")
+    p.add_argument("--dry-run", action="store_true", help="only say what would be deleted")
+    p.add_argument("-y", "--yes", action="store_true", help="don't ask first")
     p = sub.add_parser("regen", parents=[length], help="regenerate existing word cards in place (review history is kept)",
                        description="Regenerate existing word cards in place; review history, Screenshot and "
                                    "SourceAudio are kept. Picks the notes tagged 'regen' in the word deck, "
@@ -67,15 +72,17 @@ def main(argv=None):
     if args.cmd == "serve":
         from . import server
         return server.serve()
-    if args.cmd == "add-row" and not args.no_worker:
+    if args.cmd == "add-capture":
+        args.file = str(Path(args.file).resolve())   # the worker has another working directory
+    if args.cmd == "add-capture" and not args.no_worker:
         if args.min_words and args.max_words and args.min_words > args.max_words:
             parser.error(f"need 1 <= min words <= max words, got {args.min_words}-{args.max_words}")
         from . import server
-        status = server.run_add_row({"row": args.row, "min_words": args.min_words, "max_words": args.max_words})
+        status = server.run_capture({"path": args.file, "min_words": args.min_words, "max_words": args.max_words})
         if status is not None:
             return status
-        print("[!] background worker unavailable, processing the row here", file=sys.stderr)
-    if args.cmd in (None, "words", "add-row", "regen"):
+        print("[!] background worker unavailable, processing the capture here", file=sys.stderr)
+    if args.cmd in (None, "words", "add-capture", "regen"):
         if args.cmd == "regen" and args.words and args.query:
             parser.error("give words or --query, not both")
         from . import cards, examples, verbformen
@@ -86,8 +93,9 @@ def main(argv=None):
         except ValueError as e:
             parser.error(str(e))
         try:
-            if args.cmd == "add-row":
-                return cards.process_row(args.row)
+            if args.cmd == "add-capture":
+                from . import queue
+                return queue.process(args.file)
             if args.cmd == "regen":
                 return cards.run_regen(args.words, args.query, args.only, args.hint, args.dry_run)
             cards.run_clipboard()
@@ -109,10 +117,13 @@ def main(argv=None):
         return 0
     if args.cmd == "sentences":
         from . import sentences
-        return sentences.run(args.file, skip_duplicates=args.skip_duplicates)
-    if args.cmd == "add-sentence":
-        from . import sentences
-        return sentences.add_row(args.row)
+        return sentences.run(args.file)
+    if args.cmd == "retry":
+        from . import queue
+        return queue.retry(list_only=args.list)
+    if args.cmd == "clean-assets":
+        from . import queue
+        return queue.clean_assets(dry_run=args.dry_run, assume_yes=args.yes)
     if args.cmd == "subs":
         from . import subtitles
         return subtitles.run(args.files, lang=args.lang, overwrite=args.overwrite)
@@ -132,9 +143,8 @@ def main(argv=None):
     if args.cmd == "paths":
         from . import config
         s = config.load()
-        for label, value in [("config", config.CONFIG_PATH), ("data", s.data_dir), ("to-do", s.todo_file),
-                             ("done", s.done_file), ("sentences", s.sentences_file),
-                             ("sent-done", s.sentences_done_file), ("assets", s.assets_dir), ("dictionary", s.dict_dir),
+        for label, value in [("config", config.CONFIG_PATH), ("data", s.data_dir), ("queue", s.queue_dir),
+                             ("assets", s.assets_dir), ("dictionary", s.dict_dir),
                              ("review", s.review_file), ("cache", s.cache_dir),
                              ("whisper", s.whisper_cli or "(not found)"), ("model", s.whisper_model),
                              ("vad-model", s.whisper_vad_model)]:
