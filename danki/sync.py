@@ -1,9 +1,9 @@
-"""`german-anki sync`: export the deck for the german-subs mpv script. Anki is the only source.
+"""`danki sync`: export the deck for the danki-subs mpv script. Anki is the only source.
 
 Writes <data>/anki-words.json:
   {"generated", "synced_at", "words": {Word: {screenshot, audio}},
    "notes": {noteId: raw Word}, "other_notes": {noteId: label}, "mods": {noteId: mod},
-   "forms": {form: "ok"|"noaudio"|"missing"}}          <- "forms" is what german-subs reads
+   "forms": {form: "ok"|"noaudio"|"missing"}}          <- "forms" is what danki-subs reads
 and <data>/anki-words-to-review.txt (phrases, annotations, words missing from the dictionary).
 
 Fast path (runs every few seconds while a video plays):

@@ -13,12 +13,12 @@
 --   2. Edit   : fix the sentence, Enter.
 --   3. English: the translation (required), Enter saves.
 --   The row (German | English | screenshot | audio) goes to SENTENCE_FILE and is sent to
---   `german-anki add-sentence`; a new card moves it to SENTENCE_DONE_FILE.
+--   `danki add-sentence`; a new card moves it to SENTENCE_DONE_FILE.
 --
 -- On save a row is appended to MARKDOWN_FILE with:
 --   word | meaning | screenshot (with subtitles) | audio clip of the subtitle line
 -- The audio is cut with ffmpeg in the background from the active audio track.
--- The row is then sent to `german-anki add-row` in the background. A new card moves the
+-- The row is then sent to `danki add-row` in the background. A new card moves the
 -- row to DONE_FILE; a word already in Anki (media filled in / already complete) just
 -- removes it from MARKDOWN_FILE; on failure it stays in MARKDOWN_FILE.
 
@@ -31,12 +31,12 @@ local utils = require("mp.utils")
 -- ============================================================
 
 -- ------------------------------------------------------------ shared config
--- ~/.config/german-anki/.env (or $GERMAN_ANKI_CONFIG), the same file the Python tools read.
+-- ~/.config/danki/.env (or $DANKI_CONFIG), the same file the Python tools read.
 local function config_reader()
     local home = os.getenv("HOME") or ""
     local xdg = os.getenv("XDG_CONFIG_HOME")
-    local path = os.getenv("GERMAN_ANKI_CONFIG")
-        or (((xdg and xdg ~= "") and xdg or (home .. "/.config")) .. "/german-anki/.env")
+    local path = os.getenv("DANKI_CONFIG")
+        or (((xdg and xdg ~= "") and xdg or (home .. "/.config")) .. "/danki/.env")
     local cfg = {}
     local f = io.open(path, "r")
     if f then
@@ -64,19 +64,19 @@ local function config_reader()
 end
 local conf = config_reader()
 
-local BASE_DIR      = conf.str("GERMAN_ANKI_DATA_DIR", "~/.local/share/german-anki")
+local BASE_DIR      = conf.str("DANKI_DATA_DIR", "~/.local/share/danki")
 local MARKDOWN_FILE = BASE_DIR .. "/To-do-german-words.md"
 local ASSET_DIR     = BASE_DIR .. "/assets"
 local DONE_FILE     = BASE_DIR .. "/To-do-german-words-done.md"
 local SENTENCE_FILE      = BASE_DIR .. "/sentence-mining.md"
 local SENTENCE_DONE_FILE = BASE_DIR .. "/sentence-mining-done.md"
 
--- Every saved row is sent to `german-anki add-row` (one at a time, in the background). A new
+-- Every saved row is sent to `danki add-row` (one at a time, in the background). A new
 -- card moves the row from MARKDOWN_FILE to DONE_FILE; a word that was already in Anki (missing
 -- media filled in, or already complete) is only removed from MARKDOWN_FILE; when it fails the
 -- row stays in MARKDOWN_FILE. CAPTURE_AUTO_ADD=no disables this.
-local GERMAN_ANKI   = conf.bool("CAPTURE_AUTO_ADD", true)
-                      and conf.str("GERMAN_ANKI_BIN", "~/.local/bin/german-anki") or nil
+local DANKI = conf.bool("CAPTURE_AUTO_ADD", true)
+            and conf.str("DANKI_BIN", "~/.local/bin/danki") or nil
 
 local IMAGE_SIZE    = conf.str("CAPTURE_IMAGE_SIZE", "500x379")   -- Obsidian embed size hint
 local HOTKEY        = conf.str("CAPTURE_HOTKEY", "ctrl+w")
@@ -578,7 +578,7 @@ end
 -- SAVE
 -- ============================================================
 
--- ------------------------------------------------------------ Anki queue (german-anki add-row)
+-- ------------------------------------------------------------ Anki queue (danki add-row)
 
 -- remove the first line equal to `row` from `file`; append it to `done_file` if to_done
 local function move_row_to_done(row, to_done, file, done_file)
@@ -617,7 +617,7 @@ local function run_anki_queue()
     anki_busy = true
     local job = table.remove(anki_queue, 1)
     mp.command_native_async({
-        name = "subprocess", args = { GERMAN_ANKI, job.cmd, job.row },
+        name = "subprocess", args = { DANKI, job.cmd, job.row },
         playback_only = false, capture_stdout = true, capture_stderr = true,
     }, function(success, res)
         local out = res and res.stdout or ""
@@ -633,11 +633,11 @@ local function run_anki_queue()
                 show_toast({ tag(C.ok, "Anki ✓ ") .. ass_escape(result),
                              tag(C.err, "row not moved to done file: " .. ass_escape(err)) }, 6)
             end
-            mp.commandv("script-message", "german-subs-refresh")
+            mp.commandv("script-message", "danki-subs-refresh")
         else
             local why = result ~= "" and result
                 or trim(res and (res.stderr ~= "" and res.stderr or res.error_string) or "?"):sub(-200)
-            msg.error("german-anki " .. job.cmd .. " failed for " .. job.word .. ": " .. tostring(res and res.stderr))
+            msg.error("danki " .. job.cmd .. " failed for " .. job.word .. ": " .. tostring(res and res.stderr))
             show_toast({ tag(C.err, "Anki ✗ ") .. "{\\b1}" .. ass_escape(job.word) .. "{\\b0}",
                          tag(C.dim, ass_escape(why)), tag(C.faint, "row kept in the to-do file") }, 7)
         end
@@ -647,7 +647,7 @@ local function run_anki_queue()
 end
 
 local function queue_for_anki(row, word, sentence_mode)
-    if not GERMAN_ANKI then return end
+    if not DANKI then return end
     anki_queue[#anki_queue + 1] = sentence_mode
         and { row = row, word = word, cmd = "add-sentence", file = SENTENCE_FILE, done_file = SENTENCE_DONE_FILE }
         or { row = row, word = word, cmd = "add-row", file = MARKDOWN_FILE, done_file = DONE_FILE }
@@ -660,23 +660,23 @@ local function resume_playback()
     if not was_paused then mp.set_property_native("pause", false) end
 end
 
--- german-subs hides mpv's own subtitle and draws a coloured copy on the OSD, which a
+-- danki-subs hides mpv's own subtitle and draws a coloured copy on the OSD, which a
 -- "subtitles" screenshot does not include. Ask it to hand the real subtitle back for the
--- shot (it answers german-subs-suspended); without german-subs we shoot after a timeout.
+-- shot (it answers danki-subs-suspended); without danki-subs we shoot after a timeout.
 local function screenshot_with_subs(path, on_done)
     local done = false
     local function shoot()
         if done then return end
         done = true
-        mp.unregister_script_message("german-subs-suspended")
+        mp.unregister_script_message("danki-subs-suspended")
         local ok = pcall(function()
             mp.command_native({ "screenshot-to-file", path, "subtitles" })
         end) and file_exists(path)
-        mp.commandv("script-message", "german-subs-resume")
+        mp.commandv("script-message", "danki-subs-resume")
         on_done(ok)
     end
-    mp.register_script_message("german-subs-suspended", shoot)
-    mp.commandv("script-message", "german-subs-suspend")
+    mp.register_script_message("danki-subs-suspended", shoot)
+    mp.commandv("script-message", "danki-subs-suspend")
     mp.add_timeout(0.5, shoot)
 end
 
@@ -965,8 +965,8 @@ local function start_capture(m)
     render()
 end
 
-mp.add_forced_key_binding(HOTKEY, "german-word-capture", function() start_capture("word") end)
-mp.register_script_message("german-word-capture", function() start_capture("word") end)
+mp.add_forced_key_binding(HOTKEY, "danki-capture", function() start_capture("word") end)
+mp.register_script_message("danki-capture", function() start_capture("word") end)
 if SENTENCE_HOTKEY ~= "" then
     mp.add_forced_key_binding(SENTENCE_HOTKEY, "german-sentence-capture", function() start_capture("sentence") end)
 end

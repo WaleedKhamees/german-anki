@@ -1,5 +1,5 @@
-"""`german-anki sentences`: import sentence pairs from a markdown table into the sentence deck.
-`german-anki add-sentence ROW`: add one row (what the mpv sentence capture, Ctrl+E, runs).
+"""`danki sentences`: import sentence pairs from a markdown table into the sentence deck.
+`danki add-sentence ROW`: add one row (what the mpv sentence capture, Ctrl+E, runs).
 
 The file (default <data>/sentence-mining.md) looks like:
     | German | English | image | audio |

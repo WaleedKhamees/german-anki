@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-CONFIG_FILE="${GERMAN_ANKI_CONFIG:-$CONFIG_HOME/german-anki/.env}"
+CONFIG_FILE="${DANKI_CONFIG:-$CONFIG_HOME/danki/.env}"
 PURGE=0; [[ "${1:-}" == "--purge" ]] && PURGE=1
 
 conf_get() {
@@ -14,18 +14,18 @@ conf_get() {
     [[ -z "$v" ]] && v="$2"
     echo "${v/#\~/$HOME}"
 }
-DATA_DIR="$(conf_get GERMAN_ANKI_DATA_DIR "$HOME/.local/share/german-anki")"
-CLI_LINK="$(conf_get GERMAN_ANKI_BIN "$HOME/.local/bin/german-anki")"
+DATA_DIR="$(conf_get DANKI_DATA_DIR "$HOME/.local/share/danki")"
+CLI_LINK="$(conf_get DANKI_BIN "$HOME/.local/bin/danki")"
 
-# stop the background worker of `german-anki add-row` (it runs from the venv removed below)
-pkill -TERM -f "german_anki.cli serve" 2>/dev/null && echo "stopped the background worker" || true
+# stop the background worker of `danki add-row` (it runs from the venv removed below)
+pkill -TERM -f "danki.cli serve" 2>/dev/null && echo "stopped the background worker" || true
 
 for src in "$REPO_DIR"/mpv/*/; do
     link="$CONFIG_HOME/mpv/scripts/$(basename "$src")"
     if [[ -L "$link" && "$(readlink "$link")" == "${src%/}" ]]; then rm "$link"; echo "removed $link"; fi
 done
-completion="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/german-anki"
-if [[ -L "$completion" && "$(readlink "$completion")" == "$REPO_DIR/completions/german-anki.bash" ]]; then
+completion="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/danki"
+if [[ -L "$completion" && "$(readlink "$completion")" == "$REPO_DIR/completions/danki.bash" ]]; then
     rm "$completion"; echo "removed $completion"
 fi
 if [[ -L "$CLI_LINK" ]]; then rm "$CLI_LINK"; echo "removed $CLI_LINK"; fi
@@ -46,7 +46,7 @@ if [[ $PURGE -eq 1 ]]; then
         else
             rm -rf "$config_dir"
         fi
-        rm -rf "$DATA_DIR" "${XDG_CACHE_HOME:-$HOME/.cache}/german-anki"
+        rm -rf "$DATA_DIR" "${XDG_CACHE_HOME:-$HOME/.cache}/danki"
         echo "deleted"
     else
         echo "kept"

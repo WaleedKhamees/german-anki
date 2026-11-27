@@ -89,7 +89,7 @@ def setup(dict_dir, zip_path=None, force=False):
             if zip_path is None:
                 zip_path = Path(tmp) / "dict-de-de.zip"
                 print(f"downloading {DICT_URL} ...")
-                req = urllib.request.Request(DICT_URL, headers={"User-Agent": "german-anki"})
+                req = urllib.request.Request(DICT_URL, headers={"User-Agent": "danki"})
                 with urllib.request.urlopen(req, timeout=120) as r, open(zip_path, "wb") as out:
                     shutil.copyfileobj(r, out)
             with zipfile.ZipFile(zip_path) as z:
@@ -122,7 +122,7 @@ def is_built(dict_dir):
 
 def connect(dict_dir):
     if not is_built(dict_dir):
-        raise DictionaryMissing(f"dictionary not set up in {dict_dir} — run: german-anki setup-dict")
+        raise DictionaryMissing(f"dictionary not set up in {dict_dir} — run: danki setup-dict")
     return sqlite3.connect(Path(dict_dir) / "dict.sqlite")
 
 

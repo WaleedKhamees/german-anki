@@ -1,7 +1,7 @@
-"""Background worker for `german-anki add-row`, so mpv captures don't each pay for starting
+"""Background worker for `danki add-row`, so mpv captures don't each pay for starting
 Python's heavy imports and Chromium (1–2 s per word).
 
-`add-row` is a thin client: it sends the row over a Unix socket to `german-anki serve`, starting
+`add-row` is a thin client: it sends the row over a Unix socket to `danki serve`, starting
 the worker first when none is running, and prints the worker's output and exits with its status,
 so the mpv script sees exactly what an in-process run would print. If the worker can't be used,
 the row is processed in-process as before.
@@ -31,10 +31,10 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 def socket_path():
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime and os.path.isdir(runtime):
-        path = Path(runtime) / "german-anki.sock"
+        path = Path(runtime) / "danki.sock"
         if len(os.fsencode(path)) < 100:     # AF_UNIX paths are limited to ~108 bytes
             return path
-    return Path(f"/tmp/german-anki-{os.getuid()}.sock")
+    return Path(f"/tmp/danki-{os.getuid()}.sock")
 
 
 def _signature():
@@ -61,7 +61,7 @@ def _start_worker():
     with open(log, "ab") as out:
         # own session and no inherited pipes: mpv waits for EOF on add-row's stdout, so the
         # worker must not hold it open
-        return subprocess.Popen([sys.executable, "-m", "german_anki.cli", "serve"], stdin=subprocess.DEVNULL,
+        return subprocess.Popen([sys.executable, "-m", "danki.cli", "serve"], stdin=subprocess.DEVNULL,
                                 stdout=out, stderr=out, start_new_session=True, close_fds=True)
 
 

@@ -1,7 +1,7 @@
 """Word cards: puts the definition and examples (llm, examples), the conjugation table
 (verbformen), the article and pronunciation (dwds) and the captured screenshot/audio (media)
-together into Anki notes. Used by `german-anki words` (clipboard), `german-anki add-row` (called by
-the mpv capture script for every captured word) and `german-anki regen`."""
+together into Anki notes. Used by `danki words` (clipboard), `danki add-row` (called by
+the mpv capture script for every captured word) and `danki regen`."""
 import base64
 import concurrent.futures
 import html
@@ -18,7 +18,7 @@ from .anki import (Anki, MEDIA_TAGS, NO_PRONUNCIATION_TAG, WORD, DEFINITION, CON
 from .examples import NUM_EXAMPLES
 from .media import notify
 
-# --- Configuration (from ~/.config/german-anki/.env) ---
+# --- Configuration (from ~/.config/danki/.env) ---
 SETTINGS = config.load()
 DECK_NAME = SETTINGS.deck
 MODEL_NAME = SETTINGS.note_type
@@ -351,7 +351,7 @@ def process_row(row):
         ok, message, kind = False, str(e), "failed"
     if not ok:
         notify(f"Anki Auto: '{word}' failed", message, is_error=True)
-    print(f"STATUS: {kind}")   # read by german-word-capture.lua: only 'added' goes to the done file
+    print(f"STATUS: {kind}")   # read by danki-capture.lua: only 'added' goes to the done file
     print(f"RESULT: {message}")
     return 0 if ok else 1
 
@@ -409,7 +409,7 @@ def run_clipboard():
         notify("Anki Auto Fatal Error", str(e), is_error=True)
 
 
-# --- regenerating existing cards (`german-anki regen`) ---
+# --- regenerating existing cards (`danki regen`) ---
 REGEN_TAG = "regen"
 REGEN_PARTS = ("definition", "examples", "conjugation", "pronunciation")
 VERB_TAG = "german-verb"

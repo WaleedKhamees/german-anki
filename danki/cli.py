@@ -1,4 +1,4 @@
-"""german-anki command line. Heavy modules are imported lazily so `sync` stays fast."""
+"""danki command line. Heavy modules are imported lazily so `sync` stays fast."""
 import argparse
 import sys
 
@@ -11,7 +11,7 @@ def _positive_int(value):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="german-anki", description=__doc__)
+    parser = argparse.ArgumentParser(prog="danki", description=__doc__)
     sub = parser.add_subparsers(dest="cmd")
     # example sentence length, for the commands that write word cards
     length = argparse.ArgumentParser(add_help=False)
@@ -41,6 +41,12 @@ def build_parser():
                                   "(default: all)")
     p.add_argument("--hint", help="the meaning you want, passed to the LLM, e.g. 'ladder, not leader'")
     p.add_argument("--dry-run", action="store_true", help="list the matching notes without changing them")
+    p = sub.add_parser("subs", help="write subtitles (.srt) for videos with whisper.cpp",
+                       description="Transcribe videos or audio files with whisper.cpp and write FILE.srt "
+                                   "next to each one. Without files, pick them in the current folder with fzf.")
+    p.add_argument("files", nargs="*", help="video or audio files (default: pick with fzf)")
+    p.add_argument("--lang", help="spoken language, a whisper code like de or en (default: WHISPER_LANGUAGE)")
+    p.add_argument("--overwrite", action="store_true", help="replace existing .srt files instead of skipping them")
     sub.add_parser("sync", help="export the deck for subtitle colouring (used by mpv)")
     sub.add_parser("list-words", help="print the deck's words from the last sync (used by shell completion)")
     sub.add_parser("backfill-tags", help="make no-screenshot / no-audio tags match the fields")
@@ -107,6 +113,9 @@ def main(argv=None):
     if args.cmd == "add-sentence":
         from . import sentences
         return sentences.add_row(args.row)
+    if args.cmd == "subs":
+        from . import subtitles
+        return subtitles.run(args.files, lang=args.lang, overwrite=args.overwrite)
     if args.cmd == "sync":
         from . import config, sync
         return sync.run(config.load())
@@ -126,7 +135,9 @@ def main(argv=None):
         for label, value in [("config", config.CONFIG_PATH), ("data", s.data_dir), ("to-do", s.todo_file),
                              ("done", s.done_file), ("sentences", s.sentences_file),
                              ("sent-done", s.sentences_done_file), ("assets", s.assets_dir), ("dictionary", s.dict_dir),
-                             ("review", s.review_file), ("cache", s.cache_dir)]:
+                             ("review", s.review_file), ("cache", s.cache_dir),
+                             ("whisper", s.whisper_cli or "(not found)"), ("model", s.whisper_model),
+                             ("vad-model", s.whisper_vad_model)]:
             print(f"{label:10} {value}")
         return 0
     return 0

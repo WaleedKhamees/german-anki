@@ -1,4 +1,4 @@
-"""`german-anki doctor`: check everything the setup needs and say how to fix what's missing."""
+"""`danki doctor`: check everything the setup needs and say how to fix what's missing."""
 import os
 import shutil
 import sys
@@ -7,7 +7,7 @@ from pathlib import Path
 from . import config, dictionary
 from .anki import Anki, REQUIRED_FIELDS
 
-MPV_SCRIPTS = ["german-word-capture", "german-subs"]
+MPV_SCRIPTS = ["danki-capture", "danki-subs"]
 OK, BAD, WARN = "\033[32m✓\033[0m", "\033[31m✗\033[0m", "\033[33m!\033[0m"
 
 
@@ -33,7 +33,7 @@ def run():
         check(shutil.which(prog) is not None, prog, fix)
     clip = shutil.which("xclip") or shutil.which("xsel") or shutil.which("wl-paste")
     check(bool(clip), "clipboard tool (xclip / xsel / wl-clipboard)",
-          "install xclip (X11) or wl-clipboard (Wayland) — only needed for `german-anki words`")
+          "install xclip (X11) or wl-clipboard (Wayland) — only needed for `danki words`")
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -44,10 +44,19 @@ def run():
           f"{Path(sys.executable).parent / 'playwright'} install chromium")
 
     print("files")
-    check(dictionary.is_built(s.dict_dir), f"dictionary in {s.dict_dir}", "german-anki setup-dict")
+    check(dictionary.is_built(s.dict_dir), f"dictionary in {s.dict_dir}", "danki setup-dict")
     scripts_dir = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "mpv" / "scripts"
     for name in MPV_SCRIPTS:
         check((scripts_dir / name / "main.lua").exists(), f"mpv script {scripts_dir / name}", "run install.sh")
+
+    print("subtitles (danki subs, optional)")
+    check(bool(s.whisper_cli), f"whisper-cli ({s.whisper_cli or 'not found'})",
+          "run install.sh (it builds whisper.cpp), or set WHISPER_CLI", warn_only=True)
+    check(s.whisper_model.is_file(), f"whisper model {s.whisper_model}",
+          "run install.sh (it downloads it), or set WHISPER_MODEL", warn_only=True)
+    check(s.whisper_vad_model.is_file(), f"VAD model {s.whisper_vad_model}",
+          "run install.sh (it downloads it), or set WHISPER_VAD_MODEL; without it subtitles drift "
+          "during music", warn_only=True)
 
     print("anki")
     anki = Anki(s.anki_url)
@@ -61,9 +70,9 @@ def run():
         return 1
     decks = anki("deckNames")
     check(s.deck in decks, f"deck '{s.deck}' exists",
-          "german-anki setup-anki (or sync from AnkiWeb, or set ANKI_DECK)")
+          "danki setup-anki (or sync from AnkiWeb, or set ANKI_DECK)")
     check(s.sentence_deck in decks, f"sentence deck '{s.sentence_deck}' exists",
-          "german-anki setup-anki, or set ANKI_SENTENCE_DECK (only needed for sentence cards)",
+          "danki setup-anki, or set ANKI_SENTENCE_DECK (only needed for sentence cards)",
           warn_only=True)
     if s.note_type in anki("modelNames"):
         fields = anki("modelFieldNames", modelName=s.note_type)
@@ -72,7 +81,7 @@ def run():
               f"add the missing field(s) in Anki: {', '.join(missing)}")
     else:
         check(False, f"note type '{s.note_type}' exists",
-              "german-anki setup-anki (or sync from AnkiWeb, or set ANKI_NOTE_TYPE)")
+              "danki setup-anki (or sync from AnkiWeb, or set ANKI_NOTE_TYPE)")
 
     print(f"\n{problems} problem(s) found" if problems else "\neverything looks good")
     return 1 if problems else 0

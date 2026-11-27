@@ -1,4 +1,4 @@
--- german-subs: colour German subtitles by their status in Anki.
+-- danki-subs: colour German subtitles by their status in Anki.
 --
 --   white  : in Anki, with screenshot and audio
 --   blue   : in Anki, has the screenshot but no audio
@@ -7,10 +7,10 @@
 --   gray   : not in the dictionary (names, typos, made-up words)
 --   plain  : ignored (ignore.txt), numbers, punctuation  (white by default)
 --
--- Colours depend on Anki only. `german-anki sync` exports the deck from AnkiConnect (in
+-- Colours depend on Anki only. `danki sync` exports the deck from AnkiConnect (in
 -- the background) to <data>/anki-words.json on every file load, every SUBS_POLL_SECONDS
 -- while a video is open (cheap: it only reloads when the deck changed), and whenever
--- another script sends "script-message german-subs-refresh" (german-word-capture does after
+-- another script sends "script-message danki-subs-refresh" (danki-capture does after
 -- a word has been put into Anki). If Anki is not running the previous export is used.
 -- Inflected forms (ging -> gehen, Häuser -> Haus) come from the reader.dict
 -- dictionary; split separable verbs ("hört ... auf") are joined back together.
@@ -20,7 +20,7 @@
 -- Image subtitles (PGS/VobSub) have no text: they are left untouched.
 --
 -- Keys:  alt+c toggle colouring   (v still hides/shows subtitles)
--- Settings: SUBS_* in ~/.config/german-anki/.env
+-- Settings: SUBS_* in ~/.config/danki/.env
 -- Ignore list: ignore.txt next to this script (function words + common names)
 
 local mp      = require("mp")
@@ -28,12 +28,12 @@ local msg     = require("mp.msg")
 local utils   = require("mp.utils")
 
 -- ------------------------------------------------------------ shared config
--- ~/.config/german-anki/.env (or $GERMAN_ANKI_CONFIG), the same file the Python tools read.
+-- ~/.config/danki/.env (or $DANKI_CONFIG), the same file the Python tools read.
 local function config_reader()
     local home = os.getenv("HOME") or ""
     local xdg = os.getenv("XDG_CONFIG_HOME")
-    local path = os.getenv("GERMAN_ANKI_CONFIG")
-        or (((xdg and xdg ~= "") and xdg or (home .. "/.config")) .. "/german-anki/.env")
+    local path = os.getenv("DANKI_CONFIG")
+        or (((xdg and xdg ~= "") and xdg or (home .. "/.config")) .. "/danki/.env")
     local cfg = {}
     local f = io.open(path, "r")
     if f then
@@ -61,9 +61,9 @@ local function config_reader()
 end
 local conf = config_reader()
 
-local DATA_DIR = conf.str("GERMAN_ANKI_DATA_DIR", "~/.local/share/german-anki")
+local DATA_DIR = conf.str("DANKI_DATA_DIR", "~/.local/share/danki")
 local opts = {
-    german_anki   = conf.str("GERMAN_ANKI_BIN", "~/.local/bin/german-anki"),
+    danki         = conf.str("DANKI_BIN", "~/.local/bin/danki"),
     toggle_key    = conf.str("SUBS_TOGGLE_KEY", "alt+c"),
     enabled       = conf.bool("SUBS_ENABLED", true),
     -- ASS colours are BGR hex
@@ -406,7 +406,7 @@ local function run_sync(announce)
     sync_running = true
     mp.command_native_async({
         name = "subprocess",
-        args = { opts.german_anki, "sync" },
+        args = { opts.danki, "sync" },
         playback_only = false, capture_stdout = true, capture_stderr = true,
     }, function(success, res)
         local status = success and res and res.status or -1
@@ -425,8 +425,8 @@ local function run_sync(announce)
             if not anki_offline or announce then msg.warn("sync: " .. err) end
             if announce then
                 mp.osd_message(status == 3
-                    and "german-subs: Anki not reachable — using the last Anki export"
-                    or "german-subs: sync failed — " .. err, 4)
+                    and "danki-subs: Anki not reachable — using the last Anki export"
+                    or "danki-subs: sync failed — " .. err, 4)
             end
         end
         anki_offline = status ~= 0
@@ -459,8 +459,8 @@ end
 
 mp.register_event("file-loaded", function() load_ignore(); run_sync(true) end)
 
--- re-read Anki on request (german-word-capture sends this once words.py has added a card)
-mp.register_script_message("german-subs-refresh", function() run_sync(false) end)
+-- re-read Anki on request (danki-capture sends this once words.py has added a card)
+mp.register_script_message("danki-subs-refresh", function() run_sync(false) end)
 
 -- poll Anki while a file is open, so cards added any other way (clipboard words.py, the
 -- Anki editor, add-ons) recolour within a few seconds. An unchanged poll costs ~0.3s of
@@ -471,17 +471,17 @@ if opts.poll_seconds > 0 then
     end)
 end
 
--- Screenshot handshake (used by german-word-capture.lua):
---   script-message german-subs-suspend  -> mpv's own subtitle is shown again, then we
---                                          broadcast german-subs-suspended
---   script-message german-subs-resume   -> back to the coloured overlay
-mp.register_script_message("german-subs-suspend", function()
+-- Screenshot handshake (used by danki-capture.lua):
+--   script-message danki-subs-suspend  -> mpv's own subtitle is shown again, then we
+--                                          broadcast danki-subs-suspended
+--   script-message danki-subs-resume   -> back to the coloured overlay
+mp.register_script_message("danki-subs-suspend", function()
     suspended = true
     update_native_visibility()
     render()
-    mp.commandv("script-message", "german-subs-suspended")
+    mp.commandv("script-message", "danki-subs-suspended")
 end)
-mp.register_script_message("german-subs-resume", function()
+mp.register_script_message("danki-subs-resume", function()
     suspended = false
     update_native_visibility()
     render()

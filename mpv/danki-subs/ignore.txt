@@ -1,4 +1,4 @@
-# Words german-subs never colours (articles, pronouns, prepositions, conjunctions,
+# Words danki-subs never colours (articles, pronouns, prepositions, conjunctions,
 # auxiliaries, very common particles, interjections). One word per line, lowercase,
 # exact form (inflections are NOT added automatically). Lines starting with # are comments.
 # Add your own words (names etc.) anywhere. Reloaded on every video load.

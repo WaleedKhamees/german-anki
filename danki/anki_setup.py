@@ -1,4 +1,4 @@
-"""`german-anki setup-anki`: create the decks and the note type in a fresh Anki.
+"""`danki setup-anki`: create the decks and the note type in a fresh Anki.
 
 Only adds what is missing. An existing deck or note type (even one with missing fields or other
 templates) is never changed.
@@ -102,7 +102,7 @@ def create(anki, settings, new_decks, new_note_type):
 
 
 def confirm():
-    print("Already have these on AnkiWeb? Answer n, sync Anki first, then run: german-anki setup-anki")
+    print("Already have these on AnkiWeb? Answer n, sync Anki first, then run: danki setup-anki")
     try:
         return input("Create them now? [Y/n] ").strip().lower() in ("", "y", "yes")
     except EOFError:   # no terminal: never create without being asked

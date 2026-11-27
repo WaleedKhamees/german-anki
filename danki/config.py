@@ -1,15 +1,16 @@
 """Settings shared by every command (and, by format, the mpv scripts).
 
-Read from ~/.config/german-anki/.env (or $GERMAN_ANKI_CONFIG), KEY=value per line.
+Read from ~/.config/danki/.env (or $DANKI_CONFIG), KEY=value per line.
 Environment variables with the same names override the file.
 """
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get(
-    "GERMAN_ANKI_CONFIG",
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "german-anki" / ".env",
+    "DANKI_CONFIG",
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "danki" / ".env",
 )).expanduser()
 
 DEFAULTS = {
@@ -21,9 +22,17 @@ DEFAULTS = {
     "LLM_MODEL": "deepseek/deepseek-v4-flash:floor",
     "EXAMPLE_MIN_WORDS": "10",
     "EXAMPLE_MAX_WORDS": "25",
-    "GERMAN_ANKI_DATA_DIR": "~/.local/share/german-anki",
-    "GERMAN_ANKI_BIN": "~/.local/bin/german-anki",
+    "DANKI_DATA_DIR": "~/.local/share/danki",
+    "DANKI_BIN": "~/.local/bin/danki",
+    # `danki subs`; empty paths mean the whisper.cpp that install.sh builds in <data>/whisper.cpp
+    "WHISPER_CLI": "",
+    "WHISPER_MODEL": "",
+    "WHISPER_VAD_MODEL": "",
+    "WHISPER_THREADS": "",
+    "WHISPER_LANGUAGE": "de",
 }
+WHISPER_MODEL_FILE = "ggml-small-q8_0.bin"
+WHISPER_VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin"
 
 
 def read_env_file(path):
@@ -62,6 +71,11 @@ class Settings:
     example_min_words: int
     example_max_words: int
     data_dir: Path
+    whisper_cli_setting: str = ""
+    whisper_model_setting: Path | None = None
+    whisper_vad_model_setting: Path | None = None
+    whisper_threads_setting: int = 0
+    whisper_language: str = "de"
 
     @property
     def assets_dir(self): return self.data_dir / "assets"
@@ -80,8 +94,25 @@ class Settings:
     @property
     def dict_dir(self): return self.data_dir / "dict"
     @property
+    def whisper_dir(self): return self.data_dir / "whisper.cpp"
+    @property
+    def whisper_cli(self):
+        """WHISPER_CLI, else install.sh's build, else whisper-cli on PATH; None if none exists."""
+        if self.whisper_cli_setting:
+            return shutil.which(os.path.expanduser(self.whisper_cli_setting))
+        built = self.whisper_dir / "build" / "bin" / "whisper-cli"
+        return str(built) if os.access(built, os.X_OK) else shutil.which("whisper-cli")
+    @property
+    def whisper_model(self):
+        return self.whisper_model_setting or self.whisper_dir / "models" / WHISPER_MODEL_FILE
+    @property
+    def whisper_vad_model(self):
+        return self.whisper_vad_model_setting or self.whisper_dir / "models" / WHISPER_VAD_MODEL_FILE
+    @property
+    def whisper_threads(self): return self.whisper_threads_setting or os.cpu_count() or 4
+    @property
     def cache_dir(self):
-        return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "german-anki"
+        return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "danki"
 
 
 def _int(raw, key):
@@ -104,5 +135,10 @@ def load():
         llm_model=raw["LLM_MODEL"],
         example_min_words=_int(raw, "EXAMPLE_MIN_WORDS"),
         example_max_words=_int(raw, "EXAMPLE_MAX_WORDS"),
-        data_dir=_path(raw["GERMAN_ANKI_DATA_DIR"]),
+        data_dir=_path(raw["DANKI_DATA_DIR"]),
+        whisper_cli_setting=raw["WHISPER_CLI"],
+        whisper_model_setting=_path(raw["WHISPER_MODEL"]),
+        whisper_vad_model_setting=_path(raw["WHISPER_VAD_MODEL"]),
+        whisper_threads_setting=int(raw["WHISPER_THREADS"]) if raw["WHISPER_THREADS"].isdigit() else 0,
+        whisper_language=raw["WHISPER_LANGUAGE"] or "de",
     )

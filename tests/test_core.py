@@ -1,8 +1,8 @@
 import struct
 
-from german_anki import config, dictionary
-from german_anki.normalize import normalize
-from german_anki.sync import build_forms
+from danki import config, dictionary
+from danki.normalize import normalize
+from danki.sync import build_forms
 
 
 def test_normalize_cleans_annotations():
@@ -61,7 +61,7 @@ def _dwds_page(*labels):
 
 
 def test_dwds_grammar_article_and_verb():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     g = dwds.parse_grammar(_dwds_page("Substantiv (Femininum)"))
     assert g == ["Substantiv (Femininum)"]
     assert dwds.article(g) == "die"
@@ -83,7 +83,7 @@ def test_dwds_grammar_article_and_verb():
 
 
 def test_noun_header_and_llm_header_stripping():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     assert dwds.noun_header("brille", "die") == "<b><font color='#ff0000'>die</font> Brille</b>: "
     assert dwds.noun_header("Jugendliche", "der/die") == (
         "<b><font color='#00aaff'>der</font>/<font color='#ff0000'>die</font> Jugendliche</b>: ")
@@ -93,7 +93,7 @@ def test_noun_header_and_llm_header_stripping():
 
 
 def test_build_forms_declines_determiners():
-    from german_anki.sync import build_forms
+    from danki.sync import build_forms
     words = {"alle": {"screenshot": True, "audio": True}, "jeder": {"screenshot": True, "audio": False}}
     forms = build_forms(words, {"alle": {"allem"}, "jeder": {"jedes"}})
     for f in ("alle", "allen", "aller", "alles", "allem", "all"):
@@ -104,7 +104,7 @@ def test_build_forms_declines_determiners():
 
 
 def test_inflected_form_card_gets_lemma_forms():
-    from german_anki.sync import build_forms, lemmas_to_expand
+    from danki.sync import build_forms, lemmas_to_expand
     heads = {"anderer", "rechen"}
     lemmas_of = {"andere": {"anderer"}, "gerecht": {"rechen"}}
     expand = lemmas_to_expand({"andere", "gerecht"}, heads, lemmas_of)
@@ -117,7 +117,7 @@ def test_inflected_form_card_gets_lemma_forms():
 
 
 def test_verbformen_noun_page_and_noun_detection():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     assert verbformen.urls("laufen") == ["https://www.verbformen.com/conjugation/?w=laufen"]
     assert verbformen.urls("schaden", is_noun=True) == [
         "https://www.verbformen.com/declension/nouns/Schaden.htm",
@@ -131,7 +131,7 @@ def test_verbformen_noun_page_and_noun_detection():
 
 def test_screenshot_fit_width_keeps_aspect_ratio():
     from PIL import Image
-    from german_anki.images import fit_width
+    from danki.images import fit_width
     assert fit_width(Image.new("RGB", (1280, 720))).size == (720, 405)     # 16:9
     assert fit_width(Image.new("RGB", (1920, 1080))).size == (720, 405)    # 16:9, 1080p
     assert fit_width(Image.new("RGB", (1440, 1080))).size == (720, 540)    # 4:3
@@ -141,7 +141,7 @@ def test_screenshot_fit_width_keeps_aspect_ratio():
 
 
 def test_build_forms_noaudio_status_and_ranking():
-    from german_anki.sync import build_forms
+    from danki.sync import build_forms
     ok = {"screenshot": True, "audio": True}
     noaudio = {"screenshot": True, "audio": False}
     none = {"screenshot": False, "audio": False}
@@ -154,7 +154,7 @@ def test_build_forms_noaudio_status_and_ranking():
 
 
 def test_sentence_row_parsing():
-    from german_anki.sentences import parse_row
+    from danki.sentences import parse_row
     row = r"| Die Sache wird ernst | things get serious | ![[die-sache-v1.webp\|500x379]] | ![[die-sache-v1.ogg]] |"
     assert parse_row(row) == ("Die Sache wird ernst", "things get serious", "die-sache-v1.webp", "die-sache-v1.ogg")
     assert parse_row(r"| Für immer | always | ![[x.webp\|500x379]] |") == ("Für immer", "always", "x.webp", None)
@@ -164,7 +164,7 @@ def test_sentence_row_parsing():
 
 
 def test_regen_selection_helpers():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     assert cards.parse_parts(None) == set(cards.REGEN_PARTS)
     assert cards.parse_parts("Examples, definition") == {"examples", "definition"}
     import pytest
@@ -178,7 +178,7 @@ def test_regen_selection_helpers():
 
 
 def test_resolve_is_verb_fallbacks():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     assert cards.resolve_is_verb(["Verb"], {"is_verb": False}, False) is True     # DWDS wins
     assert cards.resolve_is_verb([], {"is_verb": "true"}, False) is True           # then the LLM
     assert cards.resolve_is_verb([], {"is_verb": None}, True) is True              # then the table
@@ -189,8 +189,8 @@ def test_bash_completion_matches_cli():
     import argparse
     import re
     from pathlib import Path
-    from german_anki.cli import build_parser
-    script = (Path(__file__).parent.parent / "completions" / "german-anki.bash").read_text()
+    from danki.cli import build_parser
+    script = (Path(__file__).parent.parent / "completions" / "danki.bash").read_text()
     sub = next(a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction))
     listed = re.search(r'local commands="([^"]+)"', script).group(1).split()
     assert sorted(listed) == sorted(sub.choices)
@@ -200,7 +200,7 @@ def test_bash_completion_matches_cli():
 
 
 def test_pick_tatoeba_examples_takes_the_longest():
-    from german_anki import cards, dwds, examples, llm, verbformen
+    from danki import cards, dwds, examples, llm, verbformen
     cands = [("a b", "x"), ("a b c d", "y"), ("a", "z"), ("a b c", "w")]
     assert examples.pick_longest(cands) == "a b c d <br> y<br><br>a b c <br> w<br><br>a b <br> x"
 
@@ -228,7 +228,7 @@ class FakeAnki:
 
 
 def _setup_anki(monkeypatch, fake, **kwargs):
-    from german_anki import anki_setup
+    from danki import anki_setup
     from types import SimpleNamespace
     settings = SimpleNamespace(anki_url="x", deck="D", sentence_deck="S", note_type="N")
     monkeypatch.setattr(anki_setup.config, "load", lambda: settings)
@@ -237,7 +237,7 @@ def _setup_anki(monkeypatch, fake, **kwargs):
 
 
 def test_setup_anki_creates_only_what_is_missing(monkeypatch):
-    from german_anki.anki import REQUIRED_FIELDS
+    from danki.anki import REQUIRED_FIELDS
     fake = FakeAnki()
     assert _setup_anki(monkeypatch, fake, assume_yes=True) == 0
     assert fake.decks == ["D", "S"] and fake.models == {"N": REQUIRED_FIELDS}
@@ -267,8 +267,8 @@ def test_setup_anki_asks_first(monkeypatch):
 
 def test_setup_anki_templates_use_known_fields():
     import re
-    from german_anki import anki_setup
-    from german_anki.anki import REQUIRED_FIELDS
+    from danki import anki_setup
+    from danki.anki import REQUIRED_FIELDS
     used = set(re.findall(r"\{\{[#^/]?(\w+)\}\}", anki_setup.FRONT + anki_setup.BACK))
     assert used == set(REQUIRED_FIELDS)
 
@@ -276,7 +276,7 @@ def test_setup_anki_templates_use_known_fields():
 def test_example_length_override(monkeypatch):
     import pytest
     from types import SimpleNamespace
-    from german_anki import examples, llm
+    from danki import examples, llm
     monkeypatch.setattr(examples, "_settings", SimpleNamespace(example_min_words=10, example_max_words=25))
     for name in ("MIN_WORDS", "MAX_WORDS", "length_overridden"):
         monkeypatch.setattr(examples, name, getattr(examples, name))
@@ -291,7 +291,7 @@ def test_example_length_override(monkeypatch):
 
 
 def test_example_length_settings(tmp_path, monkeypatch):
-    from german_anki import config
+    from danki import config
     env = tmp_path / ".env"
     env.write_text("EXAMPLE_MIN_WORDS=5\nEXAMPLE_MAX_WORDS=oops\n", encoding="utf-8")
     monkeypatch.setattr(config, "CONFIG_PATH", env)
@@ -302,7 +302,7 @@ def test_example_length_settings(tmp_path, monkeypatch):
 
 
 def test_media_find_is_case_insensitive_and_assets_only(tmp_path):
-    from german_anki import media
+    from danki import media
     (tmp_path / "Haus-v1.WEBP").write_bytes(b"x")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "deep.ogg").write_bytes(b"x")
@@ -313,7 +313,7 @@ def test_media_find_is_case_insensitive_and_assets_only(tmp_path):
 
 
 def test_clipboard_run_continues_after_a_failure(monkeypatch):
-    from german_anki import cards
+    from danki import cards
     import pyperclip
     monkeypatch.setattr(pyperclip, "paste", lambda: "eins\nzwei\ndrei")
     monkeypatch.setattr(cards, "notify", lambda *a, **k: None)
@@ -330,7 +330,7 @@ def test_clipboard_run_continues_after_a_failure(monkeypatch):
 def test_worker_round_trip(tmp_path, monkeypatch):
     """add-row's client against a real worker loop, with the card making stubbed out."""
     import threading
-    from german_anki import cards, server
+    from danki import cards, server
     sock = tmp_path / "w.sock"
     monkeypatch.setattr(server, "socket_path", lambda: sock)
     monkeypatch.setattr(server, "IDLE_SECONDS", 2)
@@ -360,7 +360,7 @@ def test_worker_round_trip(tmp_path, monkeypatch):
 
 
 def test_worker_unavailable_falls_back(tmp_path, monkeypatch):
-    from german_anki import server
+    from danki import server
     monkeypatch.setattr(server, "socket_path", lambda: tmp_path / "none.sock")
     monkeypatch.setattr(server, "_start_worker", lambda: None)
     monkeypatch.setattr(server, "START_TIMEOUT", 0.1)
@@ -368,7 +368,7 @@ def test_worker_unavailable_falls_back(tmp_path, monkeypatch):
 
 
 def test_examples_merge_tatoeba_first_then_llm():
-    from german_anki import examples
+    from danki import examples
     llm_html = "L1 <br> e1<br><br>L2 <br> e2<br><br>L3 <br> e3"
     assert examples.merge([], llm_html) == (llm_html, 0)
     assert examples.merge([("a b c", "x")], llm_html) == ("a b c <br> x<br><br>L1 <br> e1<br><br>L2 <br> e2", 1)
@@ -378,7 +378,7 @@ def test_examples_merge_tatoeba_first_then_llm():
 
 
 def test_table_guess_and_redo(monkeypatch, tmp_path):
-    from german_anki import cards
+    from danki import cards
     assert cards.guess_is_noun("Haus") and not cards.guess_is_noun("laufen")
     assert not cards.guess_is_noun("sich freuen")
     img = tmp_path / "t.png"
@@ -397,3 +397,49 @@ def test_table_guess_and_redo(monkeypatch, tmp_path):
     assert cards.table_needs_redo("Schön", True, False, None)             # guess found nothing
     assert cards.table_needs_redo("essen", False, True, search)           # needs the noun page
 
+
+
+def test_srt_round_trip_and_fix_durations():
+    from danki import subtitles
+    srt = ("1\n00:00:01,000 --> 00:00:03,000\nHallo\n\n"
+           "2\n00:00:05,000 --> 00:00:30,500\nKurz\nzwei Zeilen\n\n"
+           "3\n00:00:31,000 --> 00:00:32,000\n\n")          # no text: dropped
+    cues = subtitles.parse_srt(srt.replace("\n", "\r\n"))
+    assert cues == [[1.0, 3.0, "Hallo"], [5.0, 30.5, "Kurz\nzwei Zeilen"]]
+    subtitles.fix_durations(cues)
+    assert cues[0][:2] == [1.0, 3.0]                       # short enough already
+    assert cues[1][1] == 30.5 and abs(cues[1][0] - (30.5 - 2.35)) < 1e-9   # 15 chars: 1 + 1.35 s
+    out = subtitles.format_srt(cues)
+    assert out.startswith("1\n00:00:01,000 --> 00:00:03,000\nHallo\n\n2\n00:00:28,150 --> 00:00:30,500\n")
+    assert subtitles.parse_srt(out) == cues
+
+
+def test_subtitle_gaps_and_junk():
+    from danki import subtitles
+    cues = [[0.5, 2.0, "a"], [1.5, 8.0, "b"], [9.0, 10.0, "c"], [20.0, 21.0, "d"]]
+    # overlapping cues cover 0.5-8; the file start counts too, its end as well
+    assert subtitles.find_gaps(cues, 30.0) == [(10.0, 20.0), (21.0, 30.0)]
+    assert subtitles.find_gaps([], 2.0) == []
+    assert subtitles.is_junk("[Musik]")
+    assert subtitles.is_junk("Untertitel im Auftrag des ZDF")
+    assert subtitles.is_junk("ah, ah, ah, ah, ah, ah, ah")
+    assert not subtitles.is_junk("Wo ist der Bahnhof?")
+    assert subtitles.similar("Wo ist der Bahnhof?", "wo ist der bahnhof")
+    assert not subtitles.similar("Guten Morgen", "Bis später")
+
+
+def test_whisper_paths_default_to_the_data_dir(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_text(f"DANKI_DATA_DIR={tmp_path}\nWHISPER_THREADS=3\nWHISPER_LANGUAGE=en\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CONFIG_PATH", f)
+    for k in config.DEFAULTS:
+        monkeypatch.delenv(k, raising=False)
+    s = config.load()
+    assert s.whisper_model == tmp_path / "whisper.cpp" / "models" / config.WHISPER_MODEL_FILE
+    assert s.whisper_vad_model.name == config.WHISPER_VAD_MODEL_FILE
+    assert (s.whisper_threads, s.whisper_language) == (3, "en")
+    built = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-cli"
+    built.parent.mkdir(parents=True)
+    built.write_text("#!/bin/sh\n")
+    built.chmod(0o755)
+    assert s.whisper_cli == str(built)
